@@ -13,6 +13,6 @@ services:
       PAPERCLIP_DEPLOYMENT_MODE: "authenticated"
       PAPERCLIP_DEPLOYMENT_EXPOSURE: "private"
       PAPERCLIP_PUBLIC_URL: "${PAPERCLIP_PUBLIC_URL:-http://localhost:3100}"
-      BETTER_AUTH_SECRET: "${BETTER_AUTH_SECRET:?BETTER_AUTH_SECRET must be set}"
+      BETTER_AUTH_SECRET: "${BETTER_AUTH_SECRET:-f8be7e1cf1e4b279b6d810cb1161903220aeebbbd8097d039a8ff049be6cedec}"
     volumes:
       - "${PAPERCLIP_DATA_DIR:-../data/docker-paperclip}:/paperclip"
