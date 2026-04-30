@@ -64,12 +64,16 @@ export interface AdapterRuntimeServiceReport {
   healthStatus?: "unknown" | "healthy" | "unhealthy";
 }
 
+export type AdapterExecutionErrorFamily = "transient_upstream";
+
 export interface AdapterExecutionResult {
   exitCode: number | null;
   signal: string | null;
   timedOut: boolean;
   errorMessage?: string | null;
   errorCode?: string | null;
+  errorFamily?: AdapterExecutionErrorFamily | null;
+  retryNotBefore?: string | null;
   errorMeta?: Record<string, unknown>;
   usage?: UsageSummary;
   /**
@@ -212,6 +216,20 @@ export interface AdapterEnvironmentTestContext {
   companyId: string;
   adapterType: string;
   config: Record<string, unknown>;
+  /**
+   * Optional execution target the adapter should run probes against.
+   *
+   * If omitted (or `kind === "local"`), the adapter tests on the Paperclip
+   * host. For SSH/sandbox targets the adapter should run command/auth probes
+   * inside the remote environment so the result reflects what an agent run
+   * would actually see at execution time.
+   */
+  executionTarget?: AdapterExecutionTarget | null;
+  /**
+   * Friendly name of the environment being tested (when `executionTarget` is set).
+   * Surfaced in check messages so users see which environment the probe ran in.
+   */
+  environmentName?: string | null;
   deployment?: {
     mode?: "local_trusted" | "authenticated";
     exposure?: "private" | "public";
@@ -311,6 +329,13 @@ export interface ServerAdapterModule {
   supportsLocalAgentJwt?: boolean;
   models?: AdapterModel[];
   listModels?: () => Promise<AdapterModel[]>;
+  /**
+   * Optional explicit refresh hook for model discovery.
+   * Use this when the adapter caches discovered models and needs a bypass path
+   * so the UI can fetch newly released models without waiting for cache expiry
+   * or a Paperclip code update.
+   */
+  refreshModels?: () => Promise<AdapterModel[]>;
   agentConfigurationDoc?: string;
   /**
    * Optional lifecycle hook when an agent is approved/hired (join-request or hire_agent approval).

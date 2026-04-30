@@ -70,6 +70,12 @@ type AgentConfigFormProps = {
   onDirtyChange?: (dirty: boolean) => void;
   onSaveActionChange?: (save: (() => void) | null) => void;
   onCancelActionChange?: (cancel: (() => void) | null) => void;
+  onTestActionChange?: (test: (() => void) | null) => void;
+  onTestActionStateChange?: (state: { disabled: boolean; pending: boolean }) => void;
+  onTestFeedbackChange?: (feedback: {
+    errorMessage: string | null;
+    result: AdapterEnvironmentTestResult | null;
+  }) => void;
   hideInlineSave?: boolean;
   showAdapterTypeField?: boolean;
   showAdapterTestEnvironmentButton?: boolean;
@@ -176,6 +182,9 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
   const cards = props.sectionLayout === "cards";
   const showAdapterTypeField = props.showAdapterTypeField ?? true;
   const showAdapterTestEnvironmentButton = props.showAdapterTestEnvironmentButton ?? true;
+  const showInlineAdapterTestEnvironmentButton =
+    showAdapterTestEnvironmentButton && !props.onTestActionChange;
+  const showInlineAdapterTestEnvironmentFeedback = !props.onTestFeedbackChange;
   const showCreateRunPolicySection = props.showCreateRunPolicySection ?? true;
   const hideInstructionsFile = props.hideInstructionsFile ?? false;
   const { selectedCompanyId } = useCompany();
@@ -297,21 +306,29 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     [adapterType],
   );
   const runnableEnvironments = useMemo(
-    () => environments.filter((environment) => supportedEnvironmentDrivers.has(environment.driver)),
+    () => environments.filter((environment) => {
+      if (!supportedEnvironmentDrivers.has(environment.driver)) return false;
+      if (environment.driver !== "sandbox") return true;
+      const provider = typeof environment.config?.provider === "string" ? environment.config.provider : null;
+      return provider !== null && provider !== "fake";
+    }),
     [environments, supportedEnvironmentDrivers],
   );
 
   // Fetch adapter models for the effective adapter type
+  const modelQueryKey = selectedCompanyId
+    ? queryKeys.agents.adapterModels(selectedCompanyId, adapterType)
+    : ["agents", "none", "adapter-models", adapterType];
   const {
     data: fetchedModels,
     error: fetchedModelsError,
   } = useQuery({
-    queryKey: selectedCompanyId
-      ? queryKeys.agents.adapterModels(selectedCompanyId, adapterType)
-      : ["agents", "none", "adapter-models", adapterType],
+    queryKey: modelQueryKey,
     queryFn: () => agentsApi.adapterModels(selectedCompanyId!, adapterType),
     enabled: Boolean(selectedCompanyId),
   });
+  const [refreshModelsError, setRefreshModelsError] = useState<string | null>(null);
+  const [refreshingModels, setRefreshingModels] = useState(false);
   const models = fetchedModels ?? externalModels ?? [];
   const adapterCommandField =
     adapterType === "hermes_local" ? "hermesCommand" : "command";
@@ -390,16 +407,81 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
       if (!selectedCompanyId) {
         throw new Error("Select a company to test adapter environment");
       }
+      const selectedEnvironmentId = isCreate
+        ? val!.defaultEnvironmentId ?? null
+        : eff("identity", "defaultEnvironmentId", props.agent.defaultEnvironmentId ?? null);
       return agentsApi.testEnvironment(selectedCompanyId, adapterType, {
         adapterConfig: buildAdapterConfigForTest(),
+        environmentId:
+          typeof selectedEnvironmentId === "string" && selectedEnvironmentId.length > 0
+            ? selectedEnvironmentId
+            : null,
       });
     },
   });
+  const testEnvironmentDisabled = testEnvironment.isPending || !selectedCompanyId;
+  const triggerTestEnvironment = useCallback(() => {
+    if (testEnvironmentDisabled) return;
+    testEnvironment.mutate();
+  }, [testEnvironment.mutate, testEnvironmentDisabled]);
+
+  useEffect(() => {
+    if (!showAdapterTestEnvironmentButton || !props.onTestActionChange) return;
+    props.onTestActionChange(triggerTestEnvironment);
+    return () => {
+      props.onTestActionChange?.(null);
+    };
+  }, [showAdapterTestEnvironmentButton, props.onTestActionChange, triggerTestEnvironment]);
+
+  useEffect(() => {
+    if (!showAdapterTestEnvironmentButton || !props.onTestActionStateChange) return;
+    props.onTestActionStateChange({
+      disabled: testEnvironmentDisabled,
+      pending: testEnvironment.isPending,
+    });
+    return () => {
+      props.onTestActionStateChange?.({ disabled: true, pending: false });
+    };
+  }, [
+    showAdapterTestEnvironmentButton,
+    props.onTestActionStateChange,
+    testEnvironmentDisabled,
+    testEnvironment.isPending,
+  ]);
+
+  useEffect(() => {
+    if (!props.onTestFeedbackChange) return;
+    props.onTestFeedbackChange({
+      errorMessage: testEnvironment.error instanceof Error
+        ? testEnvironment.error.message
+        : testEnvironment.error
+          ? "Environment test failed"
+          : null,
+      result: testEnvironment.data ?? null,
+    });
+    return () => {
+      props.onTestFeedbackChange?.({ errorMessage: null, result: null });
+    };
+  }, [props.onTestFeedbackChange, testEnvironment.data, testEnvironment.error]);
 
   // Current model for display
   const currentModelId = isCreate
     ? val!.model
     : eff("adapterConfig", "model", String(config.model ?? ""));
+
+  async function handleRefreshModels() {
+    if (!selectedCompanyId) return;
+    setRefreshingModels(true);
+    setRefreshModelsError(null);
+    try {
+      const refreshed = await agentsApi.adapterModels(selectedCompanyId, adapterType, { refresh: true });
+      queryClient.setQueryData(modelQueryKey, refreshed);
+    } catch (error) {
+      setRefreshModelsError(error instanceof Error ? error.message : "Failed to refresh adapter models.");
+    } finally {
+      setRefreshingModels(false);
+    }
+  }
 
   const thinkingEffortKey =
     adapterType === "codex_local"
@@ -596,16 +678,16 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
             ? <h3 className="text-sm font-medium">Adapter</h3>
             : <span className="text-xs font-medium text-muted-foreground">Adapter</span>
           }
-          {showAdapterTestEnvironmentButton && (
+          {showInlineAdapterTestEnvironmentButton && (
             <Button
               type="button"
               variant="outline"
               size="sm"
               className="h-7 px-2.5 text-xs"
-              onClick={() => testEnvironment.mutate()}
-              disabled={testEnvironment.isPending || !selectedCompanyId}
+              onClick={triggerTestEnvironment}
+              disabled={testEnvironmentDisabled}
             >
-              {testEnvironment.isPending ? "Testing..." : "Test environment"}
+              {testEnvironment.isPending ? "Testing..." : "Test"}
             </Button>
           )}
         </div>
@@ -665,7 +747,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
             </Field>
           )}
 
-          {testEnvironment.error && (
+          {showInlineAdapterTestEnvironmentFeedback && testEnvironment.error && (
             <div className="rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive">
               {testEnvironment.error instanceof Error
                 ? testEnvironment.error.message
@@ -673,7 +755,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
             </div>
           )}
 
-          {testEnvironment.data && (
+          {showInlineAdapterTestEnvironmentFeedback && testEnvironment.data && (
             <AdapterEnvironmentResult result={testEnvironment.data} />
           )}
 
@@ -792,14 +874,17 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                   const result = await refetchDetectedModel();
                   return result.data?.model ?? null;
                 }}
+                onRefreshModels={adapterType === "codex_local" ? handleRefreshModels : undefined}
+                refreshingModels={refreshingModels}
                 detectModelLabel="Detect model"
                 emptyDetectHint="No model detected. Select or enter one manually."
               />
-              {fetchedModelsError && (
+              {(refreshModelsError || fetchedModelsError) && (
                 <p className="text-xs text-destructive">
-                  {fetchedModelsError instanceof Error
-                    ? fetchedModelsError.message
-                    : "Failed to load adapter models."}
+                  {refreshModelsError
+                    ?? (fetchedModelsError instanceof Error
+                      ? fetchedModelsError.message
+                      : "Failed to load adapter models.")}
                 </p>
               )}
 
@@ -1022,7 +1107,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
   );
 }
 
-function AdapterEnvironmentResult({ result }: { result: AdapterEnvironmentTestResult }) {
+export function AdapterEnvironmentResult({ result }: { result: AdapterEnvironmentTestResult }) {
   const statusLabel =
     result.status === "pass" ? "Passed" : result.status === "warn" ? "Warnings" : "Failed";
   const statusClass =
@@ -1134,6 +1219,8 @@ function ModelDropdown({
   detectedModel,
   detectedModelCandidates,
   onDetectModel,
+  onRefreshModels,
+  refreshingModels,
   detectModelLabel,
   emptyDetectHint,
 }: {
@@ -1149,6 +1236,8 @@ function ModelDropdown({
   detectedModel?: string | null;
   detectedModelCandidates?: string[];
   onDetectModel?: () => Promise<string | null>;
+  onRefreshModels?: () => Promise<void>;
+  refreshingModels?: boolean;
   detectModelLabel?: string;
   emptyDetectHint?: string;
 }) {
@@ -1278,6 +1367,24 @@ function ModelDropdown({
                 <path d="M3 3v5h5" />
               </svg>
               {detectingModel ? "Detecting..." : detectedModel ? (detectModelLabel?.replace(/^Detect\b/, "Re-detect") ?? "Re-detect from config") : (detectModelLabel ?? "Detect from config")}
+            </button>
+          )}
+          {onRefreshModels && !modelSearch.trim() && (
+            <button
+              type="button"
+              className="flex items-center gap-1.5 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50 text-muted-foreground"
+              onClick={() => {
+                void onRefreshModels();
+              }}
+              disabled={refreshingModels}
+            >
+              <svg aria-hidden="true" focusable="false" className="h-3 w-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M3 12a9 9 0 0 1 15.28-6.36L21 8" />
+                <path d="M21 3v5h-5" />
+                <path d="M21 12a9 9 0 0 1-15.28 6.36L3 16" />
+                <path d="M8 16H3v5" />
+              </svg>
+              {refreshingModels ? "Refreshing..." : "Refresh models"}
             </button>
           )}
           {value && (!models.some((m) => m.id === value) || promotedModelIds.has(value)) && (
