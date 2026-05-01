@@ -1,15 +1,20 @@
 services:
   paperclip:
-    image: paperclip:latest
+    build:
+      context: ..
+      dockerfile: Dockerfile 
     ports:
       - "3100:3100"
     environment:
       HOST: "0.0.0.0"
       PORT: "3100"
       SERVE_UI: "true"
+      OPENAI_API_KEY: "${OPENAI_API_KEY:-}"
+      ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY:-}"
+      PAPERCLIP_PUBLIC_URL: "${PAPERCLIP_PUBLIC_URL:-http://localhost:3100}"
+      BETTER_AUTH_SECRET: "${BETTER_AUTH_SECRET:-f8be7e1cf1e4b279b6d810cb1161903220aeebbbd8097d039a8ff049be6cedec}"
       PAPERCLIP_HOME: "/paperclip"
       PAPERCLIP_DEPLOYMENT_MODE: "local_trusted"
-
     volumes:
       - paperclip-data:/paperclip
 
