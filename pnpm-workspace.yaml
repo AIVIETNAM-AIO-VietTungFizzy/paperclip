@@ -11,4 +11,5 @@ packages:
   - "!packages/plugins/examples/plugin-orchestration-smoke-example"
   - server
   - ui
+  - ceo-ui
   - cli
