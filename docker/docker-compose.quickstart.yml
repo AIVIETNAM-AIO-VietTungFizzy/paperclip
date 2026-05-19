@@ -15,6 +15,8 @@ services:
       BETTER_AUTH_SECRET: "${BETTER_AUTH_SECRET:-f8be7e1cf1e4b279b6d810cb1161903220aeebbbd8097d039a8ff049be6cedec}"
       PAPERCLIP_HOME: "/paperclip"
       PAPERCLIP_DEPLOYMENT_MODE: "local_trusted"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     volumes:
       - paperclip-data:/paperclip
 
