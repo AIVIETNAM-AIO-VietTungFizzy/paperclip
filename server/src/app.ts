@@ -62,6 +62,8 @@ import { createCachedViteHtmlRenderer } from "./vite-html-renderer.js";
 
 type UiMode = "none" | "static" | "vite-dev";
 const FEEDBACK_EXPORT_FLUSH_INTERVAL_MS = 5_000;
+const DEFAULT_UI_MOUNT_PATH = "/";
+const CEO_UI_MOUNT_PATH = "/ceo";
 const VITE_DEV_ASSET_PREFIXES = [
   "/@fs/",
   "/@id/",
@@ -103,6 +105,59 @@ export function shouldEnablePrivateHostnameGuard(opts: {
     opts.deploymentExposure === "private" &&
     (opts.deploymentMode === "local_trusted" || opts.deploymentMode === "authenticated")
   );
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function mountStaticUi(app: express.Express, opts: {
+  distDir: string;
+  mountPath: string;
+  indexHtml: string;
+}) {
+  const mountPath = opts.mountPath === "/" ? "/" : opts.mountPath.replace(/\/+$/, "");
+  const assetPath = mountPath === "/" ? "/assets" : `${mountPath}/assets`;
+  const staticMountPath = mountPath === "/" ? undefined : mountPath;
+
+  // Hashed asset files (Vite emits them under /assets/<name>.<hash>.<ext>)
+  // never change once built, so they can be cached aggressively.
+  app.use(
+    assetPath,
+    express.static(path.join(opts.distDir, "assets"), {
+      maxAge: "1y",
+      immutable: true,
+    }),
+  );
+
+  const staticMiddleware = express.static(opts.distDir, {
+    maxAge: "1h",
+    setHeaders(res, filePath) {
+      if (path.basename(filePath) === "index.html") {
+        res.set("Cache-Control", "no-cache");
+      }
+    },
+  });
+  if (staticMountPath) {
+    app.use(staticMountPath, staticMiddleware);
+  } else {
+    app.use(staticMiddleware);
+  }
+
+  // SPA fallback. Only for non-asset routes; missing JS/CSS assets must 404
+  // instead of returning the HTML shell with the wrong MIME type.
+  const routePattern = mountPath === "/" ? /.*/ : new RegExp(`^${escapeRegExp(mountPath)}(?:/.*)?$`);
+  app.get(routePattern, (req, res) => {
+    if (req.path.startsWith(`${assetPath}/`)) {
+      res.status(404).end();
+      return;
+    }
+    res
+      .status(200)
+      .set("Content-Type", "text/html")
+      .set("Cache-Control", "no-cache")
+      .end(opts.indexHtml);
+  });
 }
 
 export async function createApp(
@@ -303,56 +358,31 @@ export async function createApp(
 
   const __dirname = path.dirname(fileURLToPath(import.meta.url));
   if (opts.uiMode === "static") {
-    // Try published location first (server/ui-dist/), then monorepo dev location (../../ui/dist)
-    const candidates = [
+    // Try published package locations first, then monorepo dev locations.
+    const uiDist = [
       path.resolve(__dirname, "../ui-dist"),
       path.resolve(__dirname, "../../ui/dist"),
-    ];
-    const uiDist = candidates.find((p) => fs.existsSync(path.join(p, "index.html")));
-    if (uiDist) {
-      const indexHtml = applyUiBranding(fs.readFileSync(path.join(uiDist, "index.html"), "utf-8"));
-      // Hashed asset files (Vite emits them under /assets/<name>.<hash>.<ext>)
-      // never change once built, so they can be cached aggressively.
-      app.use(
-        "/assets",
-        express.static(path.join(uiDist, "assets"), {
-          maxAge: "1y",
-          immutable: true,
-        }),
-      );
-      // Non-hashed static files (favicon.ico, manifest, robots.txt, etc.):
-      // short cache so operators who swap them out see the new version
-      // reasonably fast. Override for `index.html` specifically — it is
-      // served by this middleware for `/` and `/index.html`, and it must
-      // never outlive the asset hashes it points at.
-      app.use(
-        express.static(uiDist, {
-          maxAge: "1h",
-          setHeaders(res, filePath) {
-            if (path.basename(filePath) === "index.html") {
-              res.set("Cache-Control", "no-cache");
-            }
-          },
-        }),
-      );
-      // SPA fallback. Only for non-asset routes — if the browser asks for
-      // /assets/something.js that doesn't exist, we must NOT serve the HTML
-      // shell: the browser would try to load it as a JavaScript module, fail
-      // with a MIME-type error, and cache that broken response. Return 404
-      // instead. The index.html response itself is no-cache so a subsequent
-      // deploy's updated asset hashes are picked up on next load.
-      app.get(/.*/, (req, res) => {
-        if (req.path.startsWith("/assets/")) {
-          res.status(404).end();
-          return;
-        }
-        res
-          .status(200)
-          .set("Content-Type", "text/html")
-          .set("Cache-Control", "no-cache")
-          .end(indexHtml);
+    ].find((p) => fs.existsSync(path.join(p, "index.html")));
+    const ceoUiDist = [
+      path.resolve(__dirname, "../ceo-ui-dist"),
+      path.resolve(__dirname, "../../ceo-ui/dist"),
+    ].find((p) => fs.existsSync(path.join(p, "index.html")));
+
+    if (ceoUiDist) {
+      mountStaticUi(app, {
+        distDir: ceoUiDist,
+        mountPath: CEO_UI_MOUNT_PATH,
+        indexHtml: applyUiBranding(fs.readFileSync(path.join(ceoUiDist, "index.html"), "utf-8")),
       });
-    } else {
+    }
+    if (uiDist) {
+      mountStaticUi(app, {
+        distDir: uiDist,
+        mountPath: DEFAULT_UI_MOUNT_PATH,
+        indexHtml: applyUiBranding(fs.readFileSync(path.join(uiDist, "index.html"), "utf-8")),
+      });
+    }
+    if (!uiDist && !ceoUiDist) {
       console.warn("[paperclip] UI dist not found; running in API-only mode");
     }
   }
