@@ -162,6 +162,37 @@ export function approvalRoutes(
         },
       });
 
+      // Policy Matrix Engine (surface ②): if this approval was routed here by
+      // OpenClaw, tell the control-plane resume endpoint so it flips the matching
+      // approval_requests row to approved — after which the agent's re-attempt is
+      // allowed by enforce()'s idempotency replay. Best-effort, like the wakeup below.
+      const pmPayload = approval.payload as Record<string, unknown> | undefined;
+      if (
+        pmPayload?.source === "openclaw_policy_matrix" &&
+        typeof pmPayload.resume_callback_url === "string" &&
+        typeof pmPayload.control_plane_trace_id === "string"
+      ) {
+        try {
+          await fetch(pmPayload.resume_callback_url, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              "X-Service-Token": process.env.CONTROL_PLANE_SERVICE_TOKEN ?? "change-me-in-production",
+              "X-Caller-Service": "paperclip-proxy",
+              "X-Caller-Version": "paperclip-board",
+            },
+            body: JSON.stringify({
+              trace_id: pmPayload.control_plane_trace_id,
+              decision: "approved",
+              external_approval_ref: approval.id,
+              decided_by: req.actor.userId ?? "board",
+            }),
+          });
+        } catch (err) {
+          logger.warn({ err, approvalId: approval.id }, "policy-matrix resume callback failed");
+        }
+      }
+
       if (approval.requestedByAgentId) {
         try {
           const wakeRun = await heartbeat.wakeup(approval.requestedByAgentId, {
