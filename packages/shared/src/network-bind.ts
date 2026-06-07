@@ -42,9 +42,9 @@ export function validateConfiguredBindMode(input: {
   const customBindHost = normalizeHost(input.customBindHost);
   const errors: string[] = [];
 
-  // if (input.deploymentMode === "local_trusted" && bind !== "loopback") {
-  //   errors.push("local_trusted requires server.bind=loopback");
-  // }
+  if (input.deploymentMode === "local_trusted" && bind !== "loopback" && input.deploymentExposure !== "private") {
+    errors.push("local_trusted requires server.bind=loopback");
+  }
 
   if (bind === "custom" && !customBindHost) {
     const legacyHost = normalizeHost(input.host);
