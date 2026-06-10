@@ -559,6 +559,16 @@ export async function startServer(): Promise<StartedServer> {
     authReady = true;
   }
 
+  if (process.env.PAPERCLIP_AUTO_SEED === "true") {
+    const { autoSeed } = await import("./auto-seed.js");
+    const { companyService, agentService } = await import("./services/index.js");
+    await autoSeed({
+      db: db as any,
+      companyService: companyService(db as any),
+      agentService: agentService(db as any),
+    });
+  }
+
   if (resolvedEmbeddedPostgresPort !== null && resolvedEmbeddedPostgresPort !== config.embeddedPostgresPort) {
     config.embeddedPostgresPort = resolvedEmbeddedPostgresPort;
   }
