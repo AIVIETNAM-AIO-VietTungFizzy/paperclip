@@ -88,7 +88,20 @@ async function authPatch<T>(path: string, body: Record<string, unknown>, parse: 
   return parse(payload);
 }
 
+export interface AuthConfig {
+  signUpDisabled: boolean;
+}
+
 export const authApi = {
+  getConfig: async (): Promise<AuthConfig> => {
+    const res = await fetch("/api/auth/config", {
+      credentials: "include",
+      headers: { Accept: "application/json" },
+    });
+    if (!res.ok) return { signUpDisabled: false };
+    return res.json().catch(() => ({ signUpDisabled: false }));
+  },
+
   getSession: async (): Promise<AuthSession | null> => {
     const res = await fetch("/api/auth/get-session", {
       credentials: "include",

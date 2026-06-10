@@ -198,6 +198,7 @@ export async function createApp(
     allowedHostnames: string[];
     bindHost: string;
     authReady: boolean;
+    authDisableSignUp?: boolean;
     companyDeletionEnabled: boolean;
     instanceId?: string;
     hostVersion?: string;
@@ -243,7 +244,7 @@ export async function createApp(
       resolveSession: opts.resolveSession,
     }),
   );
-  app.use("/api/auth", authRoutes(db));
+  app.use("/api/auth", authRoutes(db, { signUpDisabled: opts.authDisableSignUp }));
   if (opts.betterAuthHandler) {
     app.all("/api/auth/{*authPath}", opts.betterAuthHandler);
   }

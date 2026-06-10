@@ -34,8 +34,12 @@ async function loadCurrentUserProfile(db: Db, userId: string) {
   });
 }
 
-export function authRoutes(db: Db) {
+export function authRoutes(db: Db, options?: { signUpDisabled?: boolean }) {
   const router = Router();
+
+  router.get("/config", (_req, res) => {
+    res.json({ signUpDisabled: options?.signUpDisabled ?? false });
+  });
 
   router.get("/get-session", async (req, res) => {
     if (req.actor.type !== "board" || !req.actor.userId) {

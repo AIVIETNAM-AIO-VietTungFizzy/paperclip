@@ -157,6 +157,7 @@ export const queryKeys = {
   },
   auth: {
     session: ["auth", "session"] as const,
+    config: ["auth", "config"] as const,
   },
   sidebarPreferences: {
     companyOrder: (userId: string) => ["sidebar-preferences", "company-order", userId] as const,

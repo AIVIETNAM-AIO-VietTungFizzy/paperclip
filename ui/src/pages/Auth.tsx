@@ -31,6 +31,22 @@ export function AuthPage() {
     retry: false,
   });
 
+  const { data: authConfig } = useQuery({
+    queryKey: queryKeys.auth.config,
+    queryFn: () => authApi.getConfig(),
+    retry: false,
+    staleTime: 300_000,
+  });
+
+  const signUpDisabled = authConfig?.signUpDisabled ?? false;
+
+  // Force sign-in mode when signup is disabled
+  useEffect(() => {
+    if (signUpDisabled && mode === "sign_up") {
+      setMode("sign_in");
+    }
+  }, [signUpDisabled, mode]);
+
   useEffect(() => {
     if (session) {
       navigate(nextPath, { replace: true });
@@ -176,19 +192,21 @@ export function AuthPage() {
             </Button>
           </form>
 
-          <div className="mt-5 text-sm text-muted-foreground">
-            {mode === "sign_in" ? "Need an account?" : "Already have an account?"}{" "}
-            <button
-              type="button"
-              className="font-medium text-foreground underline underline-offset-2"
-              onClick={() => {
-                setError(null);
-                setMode(mode === "sign_in" ? "sign_up" : "sign_in");
-              }}
-            >
-              {mode === "sign_in" ? "Create one" : "Sign in"}
-            </button>
-          </div>
+          {!signUpDisabled && (
+            <div className="mt-5 text-sm text-muted-foreground">
+              {mode === "sign_in" ? "Need an account?" : "Already have an account?"}{" "}
+              <button
+                type="button"
+                className="font-medium text-foreground underline underline-offset-2"
+                onClick={() => {
+                  setError(null);
+                  setMode(mode === "sign_in" ? "sign_up" : "sign_in");
+                }}
+              >
+                {mode === "sign_in" ? "Create one" : "Sign in"}
+              </button>
+            </div>
+          )}
         </div>
       </div>
 
