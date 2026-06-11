@@ -1,0 +1,11 @@
+FROM workspace-ai/paperclip:latest
+
+USER root
+COPY --chown=node:node ceo-ui/ /app/ceo-ui/
+COPY --chown=node:node ui/ /app/ui/
+COPY --chown=node:node server/src/ /app/server/src/
+
+WORKDIR /app
+RUN pnpm --filter @paperclipai/ui build && \
+    pnpm --filter @paperclipai/ceo-ui exec vite build --config ./vite.config.ts && \
+    pnpm --filter @paperclipai/server build
