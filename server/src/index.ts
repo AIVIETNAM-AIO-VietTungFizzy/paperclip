@@ -24,6 +24,7 @@ import {
   companyMemberships,
   instanceUserRoles,
 } from "@paperclipai/db";
+import { authAccounts } from "@paperclipai/db/schema/index";
 import detectPort from "detect-port";
 import { createApp } from "./app.js";
 import { loadConfig } from "./config.js";
@@ -567,6 +568,100 @@ export async function startServer(): Promise<StartedServer> {
       companyService: companyService(db as any),
       agentService: agentService(db as any),
     });
+  }
+
+  // ── Tenant owner auto-seed ──────────────────────────────────
+  // When the runtime stack creates a Paperclip sibling container, it injects
+  // PAPERCLIP_AUTO_SEED_OWNER_EMAIL (and name/password) so the tenant owner is
+  // automatically provisioned as an instance_admin with a credential account.
+  // This eliminates the "Instance setup required" bootstrap screen.
+  const ownerEmail = process.env.PAPERCLIP_AUTO_SEED_OWNER_EMAIL?.trim().toLowerCase();
+  if (ownerEmail) {
+    try {
+      const ownerName = process.env.PAPERCLIP_AUTO_SEED_OWNER_NAME?.trim()
+        || ownerEmail.split("@")[0];
+      const adminPassword = process.env.ADMIN_PASSWORD;
+      if (!adminPassword) {
+        logger.warn("PAPERCLIP_AUTO_SEED_OWNER_EMAIL is set but ADMIN_PASSWORD is not");
+      } else {
+        const existing = await (db as any)
+          .select({ id: authUsers.id })
+          .from(authUsers)
+          .where(eq(authUsers.email, ownerEmail))
+          .limit(1)
+          .then((rows: any[]) => rows[0] ?? null);
+
+        if (!existing) {
+          const { randomUUID } = await import("node:crypto");
+          const userId = randomUUID();
+          const now = new Date();
+
+          // Hash password using better-auth's scrypt (salt:hex format)
+          const { hashPassword } = await import("better-auth/crypto");
+          const passwordHash = await hashPassword(adminPassword);
+
+          // Create user
+          await (db as any).insert(authUsers).values({
+            id: userId,
+            name: ownerName,
+            email: ownerEmail,
+            emailVerified: true,
+            createdAt: now,
+            updatedAt: now,
+          });
+
+          // Create credential account
+          await (db as any).insert(authAccounts).values({
+            id: randomUUID(),
+            accountId: userId,
+            providerId: "credential",
+            userId,
+            password: passwordHash,
+            createdAt: now,
+            updatedAt: now,
+          });
+
+          // Grant instance_admin role
+          await (db as any).insert(instanceUserRoles).values({
+            userId,
+            role: "instance_admin",
+            updatedAt: now,
+          });
+
+          // Create default company
+          const companyId = randomUUID();
+          const companyName = process.env.PAPERCLIP_AUTO_SEED_COMPANY_NAME
+            || `${ownerName}'s Workspace`;
+          await (db as any).insert(companies).values({
+            id: companyId,
+            name: companyName,
+            description: `Auto-provisioned for ${ownerEmail}`,
+            status: "active",
+            issuePrefix: ownerName.slice(0, 3).toUpperCase() || "PAP",
+            updatedAt: now,
+          });
+
+          // Add owner membership
+          await (db as any).insert(companyMemberships).values({
+            companyId,
+            principalType: "user",
+            principalId: userId,
+            status: "active",
+            membershipRole: "owner",
+            updatedAt: now,
+          });
+
+          logger.info(
+            { email: ownerEmail, userId, companyId },
+            "Auto-seeded tenant owner in Paperclip",
+          );
+        } else {
+          logger.info({ email: ownerEmail }, "Owner already exists, skipping auto-seed");
+        }
+      }
+    } catch (err) {
+      logger.error({ err: (err as Error).message }, "Failed to auto-seed owner");
+    }
   }
 
   if (resolvedEmbeddedPostgresPort !== null && resolvedEmbeddedPostgresPort !== config.embeddedPostgresPort) {

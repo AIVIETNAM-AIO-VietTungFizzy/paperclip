@@ -1,5 +1,6 @@
-import { companies, authUsers, instanceUserRoles, companyMemberships, agents, projects, issues } from "@paperclipai/db/schema";
+import { companies, authUsers, instanceUserRoles, companyMemberships, agents, projects, issues } from "@paperclipai/db/schema/index";
 import { eq, and } from "drizzle-orm";
+import { DEFAULT_OPENCODE_LOCAL_MODEL } from "@paperclipai/adapter-opencode-local";
 
 export async function autoSeed(dependencies: {
   db: any;
@@ -64,7 +65,7 @@ export async function autoSeed(dependencies: {
     role: "ceo",
     status: "idle",
     adapterType: "opencode_local",
-    adapterConfig: { dangerouslySkipPermissions: true },
+    adapterConfig: { dangerouslySkipPermissions: true, model: DEFAULT_OPENCODE_LOCAL_MODEL },
     runtimeConfig: {
       heartbeat: { enabled: false, intervalSec: 300, wakeOnDemand: true, cooldownSec: 10, maxConcurrentRuns: 10 },
     },
