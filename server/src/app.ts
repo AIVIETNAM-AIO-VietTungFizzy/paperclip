@@ -17,6 +17,7 @@ import { agentRoutes } from "./routes/agents.js";
 import { projectRoutes } from "./routes/projects.js";
 import { issueRoutes } from "./routes/issues.js";
 import { issueTreeControlRoutes } from "./routes/issue-tree-control.js";
+import { fileResourceRoutes } from "./routes/file-resources.js";
 import { routineRoutes } from "./routes/routines.js";
 import { environmentRoutes } from "./routes/environments.js";
 import { executionWorkspaceRoutes } from "./routes/execution-workspaces.js";
@@ -69,7 +70,7 @@ import { COMPANY_IMPORT_API_PATH } from "./routes/company-import-paths.js";
 type UiMode = "none" | "static" | "vite-dev";
 const FEEDBACK_EXPORT_FLUSH_INTERVAL_MS = 5_000;
 const DEFAULT_UI_MOUNT_PATH = "/";
-const CEO_UI_MOUNT_PATH = "/ceo";
+const DEBUG_UI_MOUNT_PATH = "/debug-ui";
 const VITE_DEV_ASSET_PREFIXES = [
   "/@fs/",
   "/@id/",
@@ -278,6 +279,7 @@ export async function createApp(
     pluginWorkerManager: workerManager,
   }));
   api.use(issueTreeControlRoutes(db));
+  api.use(fileResourceRoutes(db));
   api.use(routineRoutes(db, { pluginWorkerManager: workerManager }));
   api.use(environmentRoutes(db, { pluginWorkerManager: workerManager }));
   api.use(executionWorkspaceRoutes(db));
@@ -395,18 +397,18 @@ export async function createApp(
       path.resolve(__dirname, "../../ceo-ui/dist"),
     ].find((p) => fs.existsSync(path.join(p, "index.html")));
 
-    if (ceoUiDist) {
-      mountStaticUi(app, {
-        distDir: ceoUiDist,
-        mountPath: CEO_UI_MOUNT_PATH,
-        indexHtml: applyUiBranding(fs.readFileSync(path.join(ceoUiDist, "index.html"), "utf-8")),
-      });
-    }
     if (uiDist) {
       mountStaticUi(app, {
         distDir: uiDist,
-        mountPath: DEFAULT_UI_MOUNT_PATH,
+        mountPath: DEBUG_UI_MOUNT_PATH,
         indexHtml: applyUiBranding(fs.readFileSync(path.join(uiDist, "index.html"), "utf-8")),
+      });
+    }
+    if (ceoUiDist) {
+      mountStaticUi(app, {
+        distDir: ceoUiDist,
+        mountPath: DEFAULT_UI_MOUNT_PATH,
+        indexHtml: applyUiBranding(fs.readFileSync(path.join(ceoUiDist, "index.html"), "utf-8")),
       });
     }
     if (!uiDist && !ceoUiDist) {
@@ -415,13 +417,14 @@ export async function createApp(
   }
 
   if (opts.uiMode === "vite-dev") {
-    const uiRoot = path.resolve(__dirname, "../../ui");
-    const publicUiRoot = path.resolve(uiRoot, "public");
+    const { createServer: createViteServer } = await import("vite");
     const hmrPort = resolveViteHmrPort(opts.serverPort);
     const hmrHost = resolveViteHmrHost(opts.bindHost);
-    const { createServer: createViteServer } = await import("vite");
-    const vite = await createViteServer({
-      root: uiRoot,
+
+    // CEO UI via Vite middleware (HMR for development)
+    const ceoUiRoot = path.resolve(__dirname, "../../ceo-ui");
+    const ceoVite = await createViteServer({
+      root: ceoUiRoot,
       appType: "custom",
       server: {
         middlewareMode: true,
@@ -434,15 +437,32 @@ export async function createApp(
       },
     });
     viteHtmlRenderer = createCachedViteHtmlRenderer({
-      vite,
-      uiRoot,
+      vite: ceoVite,
+      uiRoot: ceoUiRoot,
       brandHtml: applyUiBranding,
     });
     const renderViteHtml = viteHtmlRenderer;
 
-    if (fs.existsSync(publicUiRoot)) {
-      app.use(express.static(publicUiRoot, { index: false }));
+    // CEO UI public assets (favicons, sw.js, etc.)
+    const ceoPublicRoot = path.resolve(ceoUiRoot, "public");
+    if (fs.existsSync(ceoPublicRoot)) {
+      app.use(express.static(ceoPublicRoot, { index: false }));
     }
+
+    // Debug UI (original) via static build — built assets only, no Vite HMR
+    const debugUiDist = [
+      path.resolve(__dirname, "../ui-dist"),
+      path.resolve(__dirname, "../../ui/dist"),
+    ].find((p) => fs.existsSync(path.join(p, "index.html")));
+    if (debugUiDist) {
+      mountStaticUi(app, {
+        distDir: debugUiDist,
+        mountPath: DEBUG_UI_MOUNT_PATH,
+        indexHtml: applyUiBranding(fs.readFileSync(path.join(debugUiDist, "index.html"), "utf-8")),
+      });
+    }
+
+    // CEO UI HTML fallback
     app.get(/.*/, async (req, res, next) => {
       if (!shouldServeViteDevHtml(req)) {
         next();
@@ -455,7 +475,7 @@ export async function createApp(
         next(err);
       }
     });
-    app.use(vite.middlewares);
+    app.use(ceoVite.middlewares);
   }
 
   app.use(errorHandler);

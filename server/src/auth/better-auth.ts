@@ -155,7 +155,7 @@ export function createBetterAuthInstance(db: Db, config: Config, trustedOrigins:
           after: async (user: any) => {
             if (process.env.PAPERCLIP_AUTO_SEED !== "true") return;
             try {
-              const { companyMemberships, instanceUserRoles, companies } = await import("@paperclipai/db/schema");
+              const { companyMemberships, instanceUserRoles, companies } = await import("@paperclipai/db/schema/index");
               const { eq, and } = await import("drizzle-orm");
 
               const companyRows = await (db as any).select({ id: companies.id }).from(companies).limit(1);
