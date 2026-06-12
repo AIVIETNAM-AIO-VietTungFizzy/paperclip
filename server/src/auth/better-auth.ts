@@ -152,7 +152,7 @@ export function createBetterAuthInstance(db: Db, config: Config, trustedOrigins:
     databaseHooks: {
       user: {
         create: {
-          after: async (user) => {
+          after: async (user: any) => {
             if (process.env.PAPERCLIP_AUTO_SEED !== "true") return;
             try {
               const { companyMemberships, instanceUserRoles, companies } = await import("@paperclipai/db/schema");

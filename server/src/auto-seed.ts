@@ -1,4 +1,5 @@
-import { companies, authUsers, instanceUserRoles, companyMemberships, agents, projects, issues } from "@paperclipai/db/schema";
+import { createHash } from "node:crypto";
+import { companies, authUsers, instanceUserRoles, companyMemberships, agents, projects, issues, boardApiKeys } from "@paperclipai/db/schema";
 import { eq, and } from "drizzle-orm";
 
 export async function autoSeed(dependencies: {
@@ -36,6 +37,24 @@ export async function autoSeed(dependencies: {
     .then((rows: any[]) => rows[0] ?? null);
   if (!existingRole) {
     await db.insert(instanceUserRoles).values({ userId: LOCAL_BOARD_USER_ID, role: "instance_admin" });
+  }
+
+  const boardApiKeyToken = process.env.PAPERCLIP_BOARD_API_KEY?.trim();
+  if (boardApiKeyToken) {
+    const keyHash = createHash("sha256").update(boardApiKeyToken).digest("hex");
+    const existingKey = await db
+      .select({ id: boardApiKeys.id })
+      .from(boardApiKeys)
+      .where(eq(boardApiKeys.keyHash, keyHash))
+      .then((rows: any[]) => rows[0] ?? null);
+    if (!existingKey) {
+      await db.insert(boardApiKeys).values({
+        userId: LOCAL_BOARD_USER_ID,
+        name: "Management Server",
+        keyHash,
+        expiresAt: null,
+      });
+    }
   }
 
   const companyName = process.env.PAPERCLIP_AUTO_SEED_COMPANY_NAME || "My Company";
