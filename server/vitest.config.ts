@@ -13,5 +13,6 @@ export default defineConfig({
       hooks: "list",
     },
     setupFiles: ["./src/__tests__/setup-supertest.ts"],
+    exclude: [".worktrees/**", "node_modules/**"],
   },
 });
