@@ -218,6 +218,30 @@ Every later run that encounters the same accepted-plan fingerprint must consult 
 
 Concurrent accepted-plan runs are therefore idempotent relative to the fingerprint. Creating multiple child trees for the same `(sourceIssueId, acceptedPlanRevisionId)` pair is a product bug.
 
+## 7.5 Delegation-Disposition Rule
+
+When an agent completes a heartbeat (run) on an issue, the issue must have a clear disposition. The agent must not leave the issue in an ambiguous state where no live path exists and no explicit waiting path is defined.
+
+### Valid dispositions
+
+- `done`: the work is complete and terminal
+- `cancelled`: the work will not continue and is terminal
+- `in_review`: execution is paused because the next move belongs to a reviewer, approver, or board user; a real reviewer, typed participant, pending interaction or approval, or active monitor must exist
+- `blocked`: the issue cannot proceed until something external changes; first-class blockers with healthy leaf issues, or a named unblock owner and action, must exist
+- `in_progress`: only when a live continuation path exists — an active run, queued wake, one-shot monitor, or open explicit recovery action
+- delegated follow-up issues with blockers: when another agent or issue owns the next step, the source issue must be blocked on those follow-up issues
+
+### What is not a valid disposition
+
+The following are evidence of work done, not dispositions:
+
+- comments describing what remains
+- documents, screenshots, or work products
+- "Remaining" bullet lists
+- freeform notes about next steps
+
+An issue that ends a heartbeat with only these artifacts and no valid disposition is stalled. Paperclip must surface it as recovery work rather than treating the artifacts as a live path.
+
 ## 8. Non-Terminal Issue Liveness Contract
 
 For agent-owned, non-terminal issues, Paperclip should never leave work in a state where nobody is responsible for the next move and nothing will wake or surface it.
