@@ -1,3 +1,5 @@
+import { readdirSync, readFileSync, writeFileSync, existsSync } from "node:fs";
+import { join } from "node:path";
 import { Router } from "express";
 import { timingSafeEqual } from "node:crypto";
 
@@ -21,6 +23,47 @@ function requireRuntimeAuth(req: import("express").Request): void {
 
   if (!timingSafeEqual(expected, provided)) {
     throw Object.assign(new Error("runtime_service_token_required"), { status: 401 });
+  }
+}
+
+/**
+ * Update the `package` field in every per-user openclaw.json under the
+ * OCMT data directory for the given tenant.
+ *
+ * The directory layout is:
+ *   $OCMT_DATA_DIR/<tenant_id>/<user-id>/openclaw.json
+ *
+ * Each file is a JSON object with a `package` field that controls which
+ * OpenClaw package (L1, L3, etc.) the user's agent is entitled to.
+ */
+function updateOpenclawPackageField(tenantId: string, tier: string): void {
+  const dataDir = process.env.OCMT_DATA_DIR;
+  if (!dataDir) return;
+
+  const tenantDir = join(dataDir, tenantId);
+  if (!existsSync(tenantDir)) return;
+
+  let userDirs: string[];
+  try {
+    userDirs = readdirSync(tenantDir, { withFileTypes: true })
+      .filter((d) => d.isDirectory())
+      .map((d) => d.name);
+  } catch {
+    return;
+  }
+
+  for (const userId of userDirs) {
+    const configPath = join(tenantDir, userId, "openclaw.json");
+    if (!existsSync(configPath)) continue;
+
+    try {
+      const raw = readFileSync(configPath, "utf-8");
+      const config = JSON.parse(raw);
+      config.package = tier;
+      writeFileSync(configPath, JSON.stringify(config, null, 2) + "\n", "utf-8");
+    } catch {
+      // Skip files that can't be read or parsed
+    }
   }
 }
 
@@ -73,6 +116,9 @@ export function createEntitlementProxy(): Router {
     } catch {
       res.status(502).json({ error: "upstream_unreachable" });
     }
+
+    // Update openclaw.json package field for all users in this tenant
+    updateOpenclawPackageField(tenant_id as string, subscription_tier as string);
   });
 
   return router;

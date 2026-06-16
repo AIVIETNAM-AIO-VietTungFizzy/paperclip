@@ -44,7 +44,19 @@ export const SANDBOX_INSTALL_COMMAND =
   'fi; ' +
   'fi';
 
-export const DEFAULT_OPENCODE_LOCAL_MODEL = "openai/gpt-5.2-codex";
+// OpenCode's own sensible default when nothing overrides it (direct OpenAI usage).
+const FALLBACK_OPENCODE_LOCAL_MODEL = "openai/gpt-5.2-codex";
+
+// Deployments that route OpenCode through a non-OpenAI provider (e.g. a LiteLLM
+// gateway serving `litellm/<model>` ids) inject OPENCODE_DEFAULT_MODEL and
+// OPENCODE_AVAILABLE_MODELS into the server env so new agents default to a model
+// the container can actually reach. Read at module load (server env), not per-run.
+function envDefaultModel(): string {
+  const v = process.env.OPENCODE_DEFAULT_MODEL;
+  return typeof v === "string" && v.trim() ? v.trim() : FALLBACK_OPENCODE_LOCAL_MODEL;
+}
+
+export const DEFAULT_OPENCODE_LOCAL_MODEL = envDefaultModel();
 
 export function isValidOpenCodeModelId(value: unknown): value is string {
   if (typeof value !== "string") return false;
@@ -53,21 +65,35 @@ export function isValidOpenCodeModelId(value: unknown): value is string {
   return Boolean(trimmed) && slashIndex > 0 && slashIndex !== trimmed.length - 1;
 }
 
-export const models: Array<{ id: string; label: string }> = [
-  { id: DEFAULT_OPENCODE_LOCAL_MODEL, label: DEFAULT_OPENCODE_LOCAL_MODEL },
-  { id: "openai/gpt-5.4", label: "openai/gpt-5.4" },
-  { id: "openai/gpt-5.2", label: "openai/gpt-5.2" },
-  { id: "openai/gpt-5.1-codex-max", label: "openai/gpt-5.1-codex-max" },
-  { id: "openai/gpt-5.1-codex-mini", label: "openai/gpt-5.1-codex-mini" },
-];
+function buildModelsList(): Array<{ id: string; label: string }> {
+  const raw = process.env.OPENCODE_AVAILABLE_MODELS;
+  if (typeof raw === "string" && raw.trim()) {
+    // Default first, then the rest of the injected ids (de-duped).
+    const ids = raw.split(",").map((s) => s.trim()).filter(Boolean);
+    const ordered = [
+      DEFAULT_OPENCODE_LOCAL_MODEL,
+      ...ids.filter((id) => id !== DEFAULT_OPENCODE_LOCAL_MODEL),
+    ];
+    return ordered.map((id) => ({ id, label: id }));
+  }
+  return [
+    { id: DEFAULT_OPENCODE_LOCAL_MODEL, label: DEFAULT_OPENCODE_LOCAL_MODEL },
+    { id: "openai/gpt-5.4", label: "openai/gpt-5.4" },
+    { id: "openai/gpt-5.2", label: "openai/gpt-5.2" },
+    { id: "openai/gpt-5.1-codex-max", label: "openai/gpt-5.1-codex-max" },
+    { id: "openai/gpt-5.1-codex-mini", label: "openai/gpt-5.1-codex-mini" },
+  ];
+}
+
+export const models: Array<{ id: string; label: string }> = buildModelsList();
 
 export const modelProfiles: AdapterModelProfileDefinition[] = [
   {
     key: "cheap",
     label: "Cheap",
-    description: "Use OpenCode's known Codex mini model as the budget lane.",
+    description: "Budget lane — uses the deployment's default OpenCode model.",
     adapterConfig: {
-      model: "openai/gpt-5.1-codex-mini",
+      model: DEFAULT_OPENCODE_LOCAL_MODEL,
       variant: "low",
     },
     source: "adapter_default",
