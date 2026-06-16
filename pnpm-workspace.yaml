@@ -13,3 +13,4 @@ packages:
   - ui
   - ceo-ui
   - cli
+  - runtime-core/management-server
