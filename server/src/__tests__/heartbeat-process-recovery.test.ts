@@ -3435,4 +3435,179 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     const runs = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
     expect(runs).toHaveLength(1);
   });
+
+  describe("delegation-disposition gap detection", () => {
+    async function seedDelegatedParentFixture(input: {
+      childStatuses: string[];
+      existingRecoveryAction?: boolean;
+    }) {
+      const companyId = randomUUID();
+      const agentId = randomUUID();
+      const issueId = randomUUID();
+      const now = new Date("2026-03-19T00:00:00.000Z");
+      const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+
+      await db.insert(companies).values({
+        id: companyId,
+        name: "Paperclip",
+        issuePrefix,
+        requireBoardApprovalForNewAgents: false,
+      });
+
+      await db.insert(agents).values({
+        id: agentId,
+        companyId,
+        name: "WorkerAgent",
+        role: "engineer",
+        status: "idle",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      });
+
+      await db.insert(issues).values({
+        id: issueId,
+        companyId,
+        title: "Parent delegated issue",
+        status: "in_progress",
+        priority: "medium",
+        assigneeAgentId: agentId,
+        checkoutRunId: null,
+        executionRunId: null,
+        issueNumber: 1,
+        identifier: `${issuePrefix}-1`,
+        startedAt: now,
+      });
+
+      if (input.childStatuses.length > 0) {
+        const childIssues = input.childStatuses.map((status, idx) => ({
+          id: randomUUID(),
+          companyId,
+          parentId: issueId,
+          title: `Child issue ${idx + 1}`,
+          status,
+          priority: "medium",
+          issueNumber: idx + 2,
+          identifier: `${issuePrefix}-${idx + 2}`,
+        }));
+        await db.insert(issues).values(childIssues);
+      }
+
+      if (input.existingRecoveryAction) {
+        await db.insert(issueRecoveryActions).values({
+          id: randomUUID(),
+          companyId,
+          sourceIssueId: issueId,
+          kind: "missing_disposition",
+          cause: "delegation_disposition_gap",
+          status: "active",
+          ownerType: "board",
+          fingerprint: `missing_disposition:delegation_disposition_gap:${issueId}`,
+          evidence: {},
+          nextAction: "Resolve parent issue disposition",
+        });
+      }
+
+      return { companyId, agentId, issueId };
+    }
+
+    it("detects delegation disposition gap when all children are terminal", async () => {
+      const { companyId, issueId } = await seedDelegatedParentFixture({
+        childStatuses: ["done", "done", "done"],
+      });
+      const heartbeat = heartbeatService(db);
+
+      const result = await heartbeat.reconcileStrandedAssignedIssues();
+
+      expect(result.skipped).toBe(1);
+
+      const actions = await db
+        .select()
+        .from(issueRecoveryActions)
+        .where(
+          and(
+            eq(issueRecoveryActions.companyId, companyId),
+            eq(issueRecoveryActions.sourceIssueId, issueId),
+          ),
+        );
+      expect(actions).toHaveLength(1);
+      expect(actions[0]).toMatchObject({
+        kind: "missing_disposition",
+        cause: "delegation_disposition_gap",
+        status: "active",
+        ownerType: "board",
+      });
+      expect(actions[0]?.evidence).toMatchObject({
+        childCount: 3,
+      });
+    });
+
+    it("skips delegation detection when a child is non-terminal", async () => {
+      const { companyId, issueId } = await seedDelegatedParentFixture({
+        childStatuses: ["done", "in_progress", "done"],
+      });
+      const heartbeat = heartbeatService(db);
+
+      const result = await heartbeat.reconcileStrandedAssignedIssues();
+
+      expect(result.skipped).toBe(1);
+
+      const actions = await db
+        .select()
+        .from(issueRecoveryActions)
+        .where(
+          and(
+            eq(issueRecoveryActions.companyId, companyId),
+            eq(issueRecoveryActions.sourceIssueId, issueId),
+          ),
+        );
+      expect(actions).toHaveLength(0);
+    });
+
+    it("skips delegation detection when parent has no children", async () => {
+      const { companyId, issueId } = await seedDelegatedParentFixture({
+        childStatuses: [],
+      });
+      const heartbeat = heartbeatService(db);
+
+      const result = await heartbeat.reconcileStrandedAssignedIssues();
+
+      expect(result.skipped).toBe(1);
+
+      const actions = await db
+        .select()
+        .from(issueRecoveryActions)
+        .where(
+          and(
+            eq(issueRecoveryActions.companyId, companyId),
+            eq(issueRecoveryActions.sourceIssueId, issueId),
+          ),
+        );
+      expect(actions).toHaveLength(0);
+    });
+
+    it("does not create duplicate recovery action when one already exists", async () => {
+      const { companyId, issueId } = await seedDelegatedParentFixture({
+        childStatuses: ["done"],
+        existingRecoveryAction: true,
+      });
+      const heartbeat = heartbeatService(db);
+
+      const result = await heartbeat.reconcileStrandedAssignedIssues();
+
+      expect(result.skipped).toBe(1);
+
+      const actions = await db
+        .select()
+        .from(issueRecoveryActions)
+        .where(
+          and(
+            eq(issueRecoveryActions.companyId, companyId),
+            eq(issueRecoveryActions.sourceIssueId, issueId),
+          ),
+        );
+      expect(actions).toHaveLength(1);
+    });
+  });
 });

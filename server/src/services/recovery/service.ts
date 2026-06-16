@@ -2454,6 +2454,37 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     return updated;
   }
 
+  async function detectDelegationDispositionGap(companyId: string, issueId: string) {
+    const TERMINAL_CHILD_STATUSES: readonly string[] = ["done", "cancelled", "blocked", "in_review"];
+
+    const children = await db
+      .select({ id: issues.id, status: issues.status })
+      .from(issues)
+      .where(and(
+        eq(issues.parentId, issueId),
+        eq(issues.companyId, companyId),
+      ));
+
+    if (children.length === 0) return null;
+
+    for (const child of children) {
+      if (!TERMINAL_CHILD_STATUSES.includes(child.status)) return null;
+    }
+
+    const existingAction = await recoveryActionsSvc.getActiveForIssue(companyId, issueId);
+    if (existingAction && existingAction.kind === "missing_disposition" && existingAction.cause === "delegation_disposition_gap") {
+      return null;
+    }
+
+    return {
+      evidence: {
+        childCount: children.length,
+        childIds: children.map(c => c.id),
+        childStatuses: Object.fromEntries(children.map(c => [c.id, c.status])),
+      },
+    };
+  }
+
   async function reconcileStrandedAssignedIssues() {
     const candidates = await db
       .select()
@@ -2586,6 +2617,24 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         }
         continue;
       }
+
+      // --- DELEGATION DISPOSITION GAP DETECTION ---
+      const delegationGap = await detectDelegationDispositionGap(issue.companyId, issue.id);
+      if (delegationGap) {
+        await recoveryActionsSvc.upsertSourceScoped({
+          companyId: issue.companyId,
+          sourceIssueId: issue.id,
+          kind: "missing_disposition",
+          cause: "delegation_disposition_gap",
+          fingerprint: `missing_disposition:delegation_disposition_gap:${issue.id}`,
+          ownerType: "board",
+          evidence: delegationGap.evidence,
+          nextAction: "Resolve parent issue disposition — children are complete",
+        });
+        result.skipped += 1;
+        continue;
+      }
+      // --- END DELEGATION DISPOSITION GAP DETECTION ---
 
       if (!latestRun && !issue.checkoutRunId && !issue.executionRunId) {
         result.skipped += 1;
