@@ -5,6 +5,11 @@ export default defineConfig({
     environment: "node",
     globals: true,
     include: ["src/__tests__/**/*.test.ts"],
+    server: {
+      deps: {
+        inline: ["drizzle-orm"],
+      },
+    },
   },
   resolve: {
     alias: [
