@@ -447,6 +447,17 @@ export {
 } from "./routine.js";
 
 export {
+  createConnectorSchema,
+  updateConnectorSchema,
+  enableConnectorSchema,
+  updateTenantConnectorSchema,
+  type CreateConnector,
+  type UpdateConnector,
+  type EnableConnector,
+  type UpdateTenantConnector,
+} from "./connector.js";
+
+export {
   createCostEventSchema,
   updateBudgetSchema,
   type CreateCostEvent,
