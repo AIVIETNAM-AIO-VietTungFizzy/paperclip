@@ -6,11 +6,11 @@ import { createEntitlementStore } from "../services/entitlement-store.js";
 
 const ORIGINAL_CP_SERVICE_TOKEN = process.env.CP_SERVICE_TOKEN;
 
-function createApp() {
+function createApp(db?: unknown) {
   const store = createEntitlementStore();
   const app = express();
   app.use(express.json());
-  app.use("/api/runtime/internal", internalRoutes(store));
+  app.use("/api/runtime/internal", internalRoutes(store, db));
   return { app, store };
 }
 
@@ -169,4 +169,89 @@ describe("POST /api/runtime/internal/sync/entitlements", () => {
       .send({ tenantId: "tenant-1", subscriptionTier: "L1", companies: ["company-a"] });
     expect(store.getTierForCompany("company-a")).toBe("L1");
   });
+
+  it("disables tenant connectors when package tier downgrade removes entitlement", async () => {
+    const mockDb = buildMockDb([
+      { id: "conn-1", allowedPackages: ["pro", "enterprise"] },
+      { id: "conn-2", allowedPackages: [] },
+      { id: "conn-3", allowedPackages: ["enterprise"] },
+    ]);
+
+    const { app, store } = createApp(mockDb);
+
+    store.setTenantTier("tenant-1", "enterprise", ["company-a"]);
+
+    const res = await request(app)
+      .post("/api/runtime/internal/sync/entitlements")
+      .set("Authorization", "Bearer test-cp-token")
+      .send({ tenantId: "tenant-1", subscriptionTier: "free", companies: ["company-a"] });
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ status: "accepted" });
+    expect(mockDb.update).toHaveBeenCalled();
+    expect(mockDb.updateSetMock).toHaveBeenCalledWith({
+      status: "disabled",
+      lastError: "package_tier_changed",
+      updatedAt: expect.any(Date),
+    });
+  });
+
+  it("does not disable connectors when all connectors are entitled for the tier", async () => {
+    const mockDb = buildMockDb([
+      { id: "conn-1", allowedPackages: ["pro", "enterprise"] },
+      { id: "conn-2", allowedPackages: [] },
+    ]);
+
+    const { app, store } = createApp(mockDb);
+
+    store.setTenantTier("tenant-1", "pro", ["company-a"]);
+
+    const res = await request(app)
+      .post("/api/runtime/internal/sync/entitlements")
+      .set("Authorization", "Bearer test-cp-token")
+      .send({ tenantId: "tenant-1", subscriptionTier: "pro", companies: ["company-a"] });
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ status: "accepted" });
+    expect(mockDb.update).not.toHaveBeenCalled();
+  });
+
+  it("does not fail when no db is provided (backward compat)", async () => {
+    const { app, store } = createApp();
+
+    const res = await request(app)
+      .post("/api/runtime/internal/sync/entitlements")
+      .set("Authorization", "Bearer test-cp-token")
+      .send({ tenantId: "tenant-1", subscriptionTier: "free" });
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ status: "accepted" });
+  });
 });
+
+function buildMockDb(connectorsResult: Array<{ id: string; allowedPackages: string[] }>) {
+  const whereMock = vi.fn().mockReturnThis();
+  const thenMock = vi.fn().mockResolvedValue(connectorsResult);
+  const updateSetMock = vi.fn().mockReturnThis();
+  const updateWhereMock = vi.fn().mockReturnThis();
+
+  return {
+    select: vi.fn().mockReturnValue({
+      from: vi.fn().mockReturnValue({
+        where: whereMock.mockReturnValue({ then: thenMock }),
+      }),
+    }),
+    from: vi.fn().mockReturnThis(),
+    where: vi.fn().mockReturnThis(),
+    innerJoin: vi.fn().mockReturnThis(),
+    then: vi.fn(),
+    update: vi.fn().mockReturnValue({
+      set: updateSetMock.mockReturnValue({
+        where: updateWhereMock.mockReturnValue({}),
+      }),
+    }),
+    set: vi.fn().mockReturnThis(),
+    updateSetMock,
+    updateWhereMock,
+  };
+}
