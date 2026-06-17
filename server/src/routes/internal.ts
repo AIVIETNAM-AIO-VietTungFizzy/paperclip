@@ -1,5 +1,6 @@
 import { timingSafeEqual } from "node:crypto";
 import { Router } from "express";
+import { eq, and, notInArray } from "drizzle-orm";
 import type { EntitlementStore } from "../services/entitlement-store.js";
 
 function requireCpAuth(req: import("express").Request): void {
@@ -30,10 +31,13 @@ function requireCpAuth(req: import("express").Request): void {
   }
 }
 
-export function internalRoutes(entitlementStore?: EntitlementStore) {
+export function internalRoutes(
+  entitlementStore?: EntitlementStore,
+  db?: { select: Function; from: Function; where: Function; update: Function; set: Function },
+) {
   const router = Router();
 
-  router.post("/sync/entitlements", (req, res) => {
+  router.post("/sync/entitlements", async (req, res) => {
     try {
       requireCpAuth(req);
     } catch (err: unknown) {
@@ -61,6 +65,43 @@ export function internalRoutes(entitlementStore?: EntitlementStore) {
     if (entitlementStore) {
       const companyIds = Array.isArray(companies) ? (companies as string[]) : undefined;
       entitlementStore.setTenantTier(tid, tier, companyIds);
+    }
+
+    if (db && entitlementStore) {
+      try {
+        const connectors = await db
+          .select()
+          .from("connectors")
+          .where(eq("status", "active"))
+          .then((r: any[]) => r);
+
+        const entitledIds = connectors
+          .filter((c: any) => c.allowedPackages.length === 0 || c.allowedPackages.includes(tier))
+          .map((c: any) => c.id);
+
+        const nonEntitledIds = connectors
+          .filter((c: any) => !(c.allowedPackages.length === 0 || c.allowedPackages.includes(tier)))
+          .map((c: any) => c.id);
+
+        if (nonEntitledIds.length > 0) {
+          await db
+            .update("tenant_connectors")
+            .set({
+              status: "disabled",
+              lastError: "package_tier_changed",
+              updatedAt: new Date(),
+            })
+            .where(
+              and(
+                eq("tenant_id", tid),
+                eq("status", "enabled"),
+                notInArray("connector_id", entitledIds),
+              ),
+            );
+        }
+      } catch {
+        // Non-fatal: entitlement sync should not fail due to connector pre-warming
+      }
     }
 
     res.json({ status: "accepted" });
