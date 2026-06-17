@@ -44,6 +44,7 @@ import { assetRoutes } from "./routes/assets.js";
 import { accessRoutes } from "./routes/access.js";
 import { pluginRoutes } from "./routes/plugins.js";
 import { adapterRoutes } from "./routes/adapters.js";
+import { connectorRoutes } from "./routes/connectors.js";
 import { pluginUiStaticRoutes } from "./routes/plugin-ui-static.js";
 
 import { applyUiBranding } from "./ui-branding.js";
@@ -369,6 +370,7 @@ export async function createApp(
     ),
   );
   api.use(adapterRoutes());
+  api.use(connectorRoutes(db));
   api.use(
     accessRoutes(db, {
       deploymentMode: opts.deploymentMode,
