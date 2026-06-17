@@ -1,6 +1,8 @@
 import { timingSafeEqual } from "node:crypto";
 import { Router } from "express";
 import { eq, and, notInArray } from "drizzle-orm";
+import type { Db } from "@paperclipai/db";
+import { connectors, tenantConnectors } from "@paperclipai/db";
 import type { EntitlementStore } from "../services/entitlement-store.js";
 
 function requireCpAuth(req: import("express").Request): void {
@@ -33,7 +35,7 @@ function requireCpAuth(req: import("express").Request): void {
 
 export function internalRoutes(
   entitlementStore?: EntitlementStore,
-  db?: { select: Function; from: Function; where: Function; update: Function; set: Function },
+  db?: Db,
 ) {
   const router = Router();
 
@@ -69,23 +71,18 @@ export function internalRoutes(
 
     if (db && entitlementStore) {
       try {
-        const connectors = await db
-          .select()
-          .from("connectors")
-          .where(eq("status", "active"))
-          .then((r: any[]) => r);
+        const connectorRows = await db
+          .select({ id: connectors.id, allowedPackages: connectors.allowedPackages })
+          .from(connectors)
+          .where(eq(connectors.status, "active"));
 
-        const entitledIds = connectors
-          .filter((c: any) => c.allowedPackages.length === 0 || c.allowedPackages.includes(tier))
-          .map((c: any) => c.id);
+        const entitledIds = connectorRows
+          .filter((c) => c.allowedPackages.length === 0 || c.allowedPackages.includes(tier))
+          .map((c) => c.id);
 
-        const nonEntitledIds = connectors
-          .filter((c: any) => !(c.allowedPackages.length === 0 || c.allowedPackages.includes(tier)))
-          .map((c: any) => c.id);
-
-        if (nonEntitledIds.length > 0) {
+        if (entitledIds.length < connectorRows.length) {
           await db
-            .update("tenant_connectors")
+            .update(tenantConnectors)
             .set({
               status: "disabled",
               lastError: "package_tier_changed",
@@ -93,9 +90,9 @@ export function internalRoutes(
             })
             .where(
               and(
-                eq("tenant_id", tid),
-                eq("status", "enabled"),
-                notInArray("connector_id", entitledIds),
+                eq(tenantConnectors.tenantId, tid),
+                eq(tenantConnectors.status, "enabled"),
+                notInArray(tenantConnectors.connectorId, entitledIds),
               ),
             );
         }
@@ -105,6 +102,89 @@ export function internalRoutes(
     }
 
     res.json({ status: "accepted" });
+  });
+
+  router.get("/tenants/:tenantId/enabled-connectors", async (req, res) => {
+    try {
+      requireCpAuth(req);
+    } catch (err: unknown) {
+      const error = err as { status?: number; message?: string };
+      res.status(error.status ?? 401).json({ error: error.message ?? "cp_service_token_required" });
+      return;
+    }
+
+    if (!db) {
+      res.status(503).json({ error: "database_not_available" });
+      return;
+    }
+
+    const { tenantId } = req.params;
+
+    const rows = await db
+      .select({
+        id: tenantConnectors.id,
+        connectorKey: connectors.connectorKey,
+        connectorName: connectors.connectorName,
+        namespace: tenantConnectors.namespace,
+        resolvedEndpoint: tenantConnectors.resolvedEndpoint,
+        status: tenantConnectors.status,
+      })
+      .from(tenantConnectors)
+      .innerJoin(connectors, eq(tenantConnectors.connectorId, connectors.id))
+      .where(
+        and(
+          eq(tenantConnectors.tenantId, tenantId),
+          eq(tenantConnectors.status, "enabled"),
+          eq(connectors.status, "active"),
+        ),
+      );
+
+    res.json(rows);
+  });
+
+  router.get("/tenants/:tenantId/connector-by-namespace/:namespace", async (req, res) => {
+    try {
+      requireCpAuth(req);
+    } catch (err: unknown) {
+      const error = err as { status?: number; message?: string };
+      res.status(error.status ?? 401).json({ error: error.message ?? "cp_service_token_required" });
+      return;
+    }
+
+    if (!db || !entitlementStore) {
+      res.status(503).json({ error: "database_not_available" });
+      return;
+    }
+
+    const { tenantId, namespace } = req.params;
+
+    const row = await db
+      .select({
+        id: tenantConnectors.id,
+        connectorKey: connectors.connectorKey,
+        connectorName: connectors.connectorName,
+        namespace: tenantConnectors.namespace,
+        resolvedEndpoint: tenantConnectors.resolvedEndpoint,
+        allowedPackages: connectors.allowedPackages,
+      })
+      .from(tenantConnectors)
+      .innerJoin(connectors, eq(tenantConnectors.connectorId, connectors.id))
+      .where(
+        and(
+          eq(tenantConnectors.tenantId, tenantId),
+          eq(tenantConnectors.namespace, namespace),
+          eq(tenantConnectors.status, "enabled"),
+        ),
+      )
+      .limit(1)
+      .then((r) => r[0]);
+
+    if (!row) { res.status(404).json({ error: "connector_not_found" }); return; }
+
+    const tier = entitlementStore.getTierForCompany(tenantId) ?? "free";
+    const packageTier = row.allowedPackages?.includes(tier) ? tier : "denied";
+
+    res.json({ ...row, packageTier });
   });
 
   return router;

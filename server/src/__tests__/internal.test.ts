@@ -229,9 +229,180 @@ describe("POST /api/runtime/internal/sync/entitlements", () => {
   });
 });
 
+describe("GET /api/runtime/internal/tenants/:tenantId/enabled-connectors", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    process.env.CP_SERVICE_TOKEN = "test-cp-token";
+  });
+
+  afterEach(() => {
+    if (ORIGINAL_CP_SERVICE_TOKEN === undefined) {
+      delete process.env.CP_SERVICE_TOKEN;
+    } else {
+      process.env.CP_SERVICE_TOKEN = ORIGINAL_CP_SERVICE_TOKEN;
+    }
+    vi.restoreAllMocks();
+  });
+
+  it("returns 401 when no auth header is provided", async () => {
+    const { app } = createApp();
+    const res = await request(app)
+      .get("/api/runtime/internal/tenants/tenant-1/enabled-connectors");
+
+    expect(res.status).toBe(401);
+    expect(res.body).toEqual({ error: "cp_service_token_required" });
+  });
+
+  it("returns 503 when no db is provided", async () => {
+    const { app } = createApp();
+    const res = await request(app)
+      .get("/api/runtime/internal/tenants/tenant-1/enabled-connectors")
+      .set("Authorization", "Bearer test-cp-token");
+
+    expect(res.status).toBe(503);
+    expect(res.body).toEqual({ error: "database_not_available" });
+  });
+
+  it("returns enabled connectors for a tenant", async () => {
+    const mockRows = [
+      { id: "tc-1", connectorKey: "gmail", connectorName: "Gmail", namespace: "gmail", resolvedEndpoint: "http://gmail:3001", status: "enabled" },
+    ];
+    const mockDb = buildMockDbForInternalRoutes(mockRows);
+    const { app } = createApp(mockDb);
+
+    const res = await request(app)
+      .get("/api/runtime/internal/tenants/tenant-1/enabled-connectors")
+      .set("Authorization", "Bearer test-cp-token");
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual(mockRows);
+  });
+
+  it("returns empty array when no connectors are enabled", async () => {
+    const mockDb = buildMockDbForInternalRoutes([]);
+    const { app } = createApp(mockDb);
+
+    const res = await request(app)
+      .get("/api/runtime/internal/tenants/tenant-1/enabled-connectors")
+      .set("Authorization", "Bearer test-cp-token");
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual([]);
+  });
+});
+
+describe("GET /api/runtime/internal/tenants/:tenantId/connector-by-namespace/:namespace", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    process.env.CP_SERVICE_TOKEN = "test-cp-token";
+  });
+
+  afterEach(() => {
+    if (ORIGINAL_CP_SERVICE_TOKEN === undefined) {
+      delete process.env.CP_SERVICE_TOKEN;
+    } else {
+      process.env.CP_SERVICE_TOKEN = ORIGINAL_CP_SERVICE_TOKEN;
+    }
+    vi.restoreAllMocks();
+  });
+
+  it("returns 401 when no auth header is provided", async () => {
+    const { app } = createApp();
+    const res = await request(app)
+      .get("/api/runtime/internal/tenants/tenant-1/connector-by-namespace/gmail");
+
+    expect(res.status).toBe(401);
+    expect(res.body).toEqual({ error: "cp_service_token_required" });
+  });
+
+  it("returns 503 when no db is provided", async () => {
+    const { app } = createApp();
+    const res = await request(app)
+      .get("/api/runtime/internal/tenants/tenant-1/connector-by-namespace/gmail")
+      .set("Authorization", "Bearer test-cp-token");
+
+    expect(res.status).toBe(503);
+    expect(res.body).toEqual({ error: "database_not_available" });
+  });
+
+  it("returns 404 when connector is not found", async () => {
+    const mockDb = buildMockDbForInternalRoutes([]);
+    const { app } = createApp(mockDb);
+
+    const res = await request(app)
+      .get("/api/runtime/internal/tenants/tenant-1/connector-by-namespace/unknown")
+      .set("Authorization", "Bearer test-cp-token");
+
+    expect(res.status).toBe(404);
+    expect(res.body).toEqual({ error: "connector_not_found" });
+  });
+
+  it("returns connector info with packageTier when found", async () => {
+    const mockRow = {
+      id: "tc-1",
+      connectorKey: "gmail",
+      connectorName: "Gmail",
+      namespace: "gmail",
+      resolvedEndpoint: "http://gmail:3001",
+      allowedPackages: ["starter", "growth", "enterprise"],
+    };
+    const mockDb = buildMockDbForInternalRoutes([mockRow]);
+    const { app, store } = createApp(mockDb);
+    store.setTenantTier("tenant-1", "growth", []);
+
+    const res = await request(app)
+      .get("/api/runtime/internal/tenants/tenant-1/connector-by-namespace/gmail")
+      .set("Authorization", "Bearer test-cp-token");
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ ...mockRow, packageTier: "growth" });
+  });
+
+  it("returns denied packageTier when tenant tier is not in allowedPackages", async () => {
+    const mockRow = {
+      id: "tc-1",
+      connectorKey: "gmail",
+      connectorName: "Gmail",
+      namespace: "gmail",
+      resolvedEndpoint: "http://gmail:3001",
+      allowedPackages: ["enterprise"],
+    };
+    const mockDb = buildMockDbForInternalRoutes([mockRow]);
+    const { app, store } = createApp(mockDb);
+    store.setTenantTier("tenant-1", "free", []);
+
+    const res = await request(app)
+      .get("/api/runtime/internal/tenants/tenant-1/connector-by-namespace/gmail")
+      .set("Authorization", "Bearer test-cp-token");
+
+    expect(res.status).toBe(200);
+    expect(res.body.packageTier).toBe("denied");
+  });
+
+  it("defaults to free tier when no entitlement is configured", async () => {
+    const mockRow = {
+      id: "tc-1",
+      connectorKey: "gmail",
+      connectorName: "Gmail",
+      namespace: "gmail",
+      resolvedEndpoint: "http://gmail:3001",
+      allowedPackages: ["free", "starter"],
+    };
+    const mockDb = buildMockDbForInternalRoutes([mockRow]);
+    const { app } = createApp(mockDb);
+
+    const res = await request(app)
+      .get("/api/runtime/internal/tenants/tenant-1/connector-by-namespace/gmail")
+      .set("Authorization", "Bearer test-cp-token");
+
+    expect(res.status).toBe(200);
+    expect(res.body.packageTier).toBe("free");
+  });
+});
+
 function buildMockDb(connectorsResult: Array<{ id: string; allowedPackages: string[] }>) {
   const whereMock = vi.fn().mockReturnThis();
-  const thenMock = vi.fn().mockResolvedValue(connectorsResult);
+  const thenMock = vi.fn((resolve: (value: unknown) => void) => resolve(connectorsResult));
   const updateSetMock = vi.fn().mockReturnThis();
   const updateWhereMock = vi.fn().mockReturnThis();
 
@@ -253,5 +424,26 @@ function buildMockDb(connectorsResult: Array<{ id: string; allowedPackages: stri
     set: vi.fn().mockReturnThis(),
     updateSetMock,
     updateWhereMock,
+  };
+}
+
+function buildMockDbForInternalRoutes(rows: unknown[]) {
+  const promise = Promise.resolve(rows);
+  const chain = Object.assign(promise, {
+    from: vi.fn().mockReturnThis(),
+    where: vi.fn().mockReturnThis(),
+    innerJoin: vi.fn().mockReturnThis(),
+    limit: vi.fn().mockReturnThis(),
+  });
+  const selectFn = vi.fn().mockReturnValue(chain);
+  return {
+    select: selectFn,
+    from: vi.fn().mockReturnThis(),
+    where: vi.fn().mockReturnThis(),
+    innerJoin: vi.fn().mockReturnThis(),
+    limit: vi.fn().mockReturnThis(),
+    then: vi.fn(),
+    update: vi.fn(),
+    set: vi.fn(),
   };
 }

@@ -22,6 +22,9 @@ import {
   ACTIVE_RUN_OUTPUT_CONTINUE_REARM_MS,
   ACTIVE_RUN_OUTPUT_CRITICAL_THRESHOLD_MS,
   ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS,
+  ACTIVE_RUN_OUTPUT_FALSE_POSITIVE_COOLDOWN_MS,
+  ACTIVE_RUN_OUTPUT_SLOW_MODEL_SUSPICION_THRESHOLD_MS,
+  ACTIVE_RUN_OUTPUT_SLOW_MODEL_CRITICAL_THRESHOLD_MS,
   heartbeatService,
 } from "../services/heartbeat.ts";
 import { recoveryService } from "../services/recovery/service.ts";
@@ -822,5 +825,137 @@ describeEmbeddedPostgres("active-run output watchdog", () => {
       createdByRunId: randomUUID(),
     });
     expect(decision.createdByRunId).toBe(managerRunId);
+  });
+
+  it("respects false-positive cooldown — skips creating a new evaluation when a recent false-positive exists", async () => {
+    const now = new Date("2026-04-22T20:00:00.000Z");
+    const { companyId, managerId, runId, issuePrefix } = await seedRunningRun({
+      now,
+      ageMs: ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS + 60_000,
+    });
+    const closedEvaluationId = randomUUID();
+    await db.insert(issues).values({
+      id: closedEvaluationId,
+      companyId,
+      title: "Closed false-positive evaluation",
+      status: "done",
+      priority: "medium",
+      assigneeAgentId: managerId,
+      issueNumber: 2,
+      identifier: `${issuePrefix}-2`,
+      originKind: "stale_active_run_evaluation",
+      originId: runId,
+      originRunId: runId,
+      originFingerprint: `stale_active_run:${companyId}:${runId}`,
+      completedAt: new Date(now.getTime() - 30 * 60 * 1000),
+    });
+    await db.insert(heartbeatRunWatchdogDecisions).values({
+      companyId,
+      runId,
+      evaluationIssueId: closedEvaluationId,
+      decision: "dismissed_false_positive",
+      reason: "Was a false positive",
+    });
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.scanSilentActiveRuns({ now, companyId });
+
+    expect(result.created).toBe(0);
+    expect(result.snoozed).toBe(1);
+    const evaluations = await db
+      .select()
+      .from(issues)
+      .where(and(eq(issues.companyId, companyId), eq(issues.originKind, "stale_active_run_evaluation")));
+    expect(evaluations).toHaveLength(1);
+  });
+
+  it("uses higher suspicion threshold for slow model agents (deepseek)", async () => {
+    const now = new Date("2026-04-22T20:00:00.000Z");
+    const companyId = randomUUID();
+    const managerId = randomUUID();
+    const coderId = randomUUID();
+    const issueId = randomUUID();
+    const runId = randomUUID();
+    const issuePrefix = `W${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+    const startedAt = new Date(now.getTime() - ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS - 60_000);
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Slow Model Co",
+      issuePrefix,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values([
+      {
+        id: managerId,
+        companyId,
+        name: "CTO",
+        role: "cto",
+        status: "idle",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+      {
+        id: coderId,
+        companyId,
+        name: "DeepSeek Coder",
+        role: "engineer",
+        status: "running",
+        reportsTo: managerId,
+        adapterType: "codex_local",
+        adapterConfig: { model: "deepseek-v4-flash" },
+        runtimeConfig: {},
+        permissions: {},
+      },
+    ]);
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Slow model implementation",
+      status: "in_progress",
+      priority: "medium",
+      assigneeAgentId: coderId,
+      issueNumber: 1,
+      identifier: `${issuePrefix}-1`,
+    });
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId,
+      agentId: coderId,
+      status: "running",
+      invocationSource: "assignment",
+      triggerDetail: "system",
+      startedAt,
+      processStartedAt: startedAt,
+      lastOutputAt: null,
+      lastOutputSeq: 0,
+      lastOutputStream: null,
+      contextSnapshot: { issueId },
+      logBytes: 0,
+    });
+    await db.update(issues).set({ executionRunId: runId }).where(eq(issues.id, issueId));
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.scanSilentActiveRuns({ now, companyId });
+
+    expect(result.created).toBe(0);
+    expect(result.snoozed).toBe(1);
+
+    const silence = await heartbeat.buildRunOutputSilence({
+      id: runId,
+      companyId,
+      status: "running",
+      lastOutputAt: null,
+      lastOutputSeq: 0,
+      lastOutputStream: null,
+      processStartedAt: startedAt,
+      startedAt,
+      createdAt: startedAt,
+    }, now, { adapterConfig: { model: "deepseek-v4-flash" }, runtimeConfig: {} });
+    expect(silence.suspicionThresholdMs).toBe(ACTIVE_RUN_OUTPUT_SLOW_MODEL_SUSPICION_THRESHOLD_MS);
+    expect(silence.criticalThresholdMs).toBe(ACTIVE_RUN_OUTPUT_SLOW_MODEL_CRITICAL_THRESHOLD_MS);
+    expect(silence.level).toBe("ok");
   });
 });

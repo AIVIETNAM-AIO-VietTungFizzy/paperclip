@@ -43,16 +43,16 @@ CREATE TABLE "tenant_connectors" (
 	"updated_at" timestamp with time zone DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
-ALTER TABLE "document_annotation_comments" ADD COLUMN "issue_comment_id" uuid;--> statement-breakpoint
-ALTER TABLE "documents" ADD COLUMN "source_trust" jsonb;--> statement-breakpoint
-ALTER TABLE "issue_comments" ADD COLUMN "deleted_at" timestamp with time zone;--> statement-breakpoint
-ALTER TABLE "issue_comments" ADD COLUMN "deleted_by_type" text;--> statement-breakpoint
-ALTER TABLE "issue_comments" ADD COLUMN "deleted_by_agent_id" uuid;--> statement-breakpoint
-ALTER TABLE "issue_comments" ADD COLUMN "deleted_by_user_id" text;--> statement-breakpoint
-ALTER TABLE "issue_comments" ADD COLUMN "deleted_by_run_id" uuid;--> statement-breakpoint
-ALTER TABLE "issue_comments" ADD COLUMN "source_trust" jsonb;--> statement-breakpoint
-ALTER TABLE "issue_work_products" ADD COLUMN "source_trust" jsonb;--> statement-breakpoint
-ALTER TABLE "issues" ADD COLUMN "source_trust" jsonb;--> statement-breakpoint
+ALTER TABLE "document_annotation_comments" ADD COLUMN IF NOT EXISTS "issue_comment_id" uuid;--> statement-breakpoint
+ALTER TABLE "documents" ADD COLUMN IF NOT EXISTS "source_trust" jsonb;--> statement-breakpoint
+ALTER TABLE "issue_comments" ADD COLUMN IF NOT EXISTS "deleted_at" timestamp with time zone;--> statement-breakpoint
+ALTER TABLE "issue_comments" ADD COLUMN IF NOT EXISTS "deleted_by_type" text;--> statement-breakpoint
+ALTER TABLE "issue_comments" ADD COLUMN IF NOT EXISTS "deleted_by_agent_id" uuid;--> statement-breakpoint
+ALTER TABLE "issue_comments" ADD COLUMN IF NOT EXISTS "deleted_by_user_id" text;--> statement-breakpoint
+ALTER TABLE "issue_comments" ADD COLUMN IF NOT EXISTS "deleted_by_run_id" uuid;
+ALTER TABLE "issue_comments" ADD COLUMN IF NOT EXISTS "source_trust" jsonb;--> statement-breakpoint
+ALTER TABLE "issue_work_products" ADD COLUMN IF NOT EXISTS "source_trust" jsonb;--> statement-breakpoint
+ALTER TABLE "issues" ADD COLUMN IF NOT EXISTS "source_trust" jsonb;--> statement-breakpoint
 ALTER TABLE "connector_tool_registry" ADD CONSTRAINT "connector_tool_registry_tenant_connector_id_tenant_connectors_id_fk" FOREIGN KEY ("tenant_connector_id") REFERENCES "public"."tenant_connectors"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "tenant_connectors" ADD CONSTRAINT "tenant_connectors_connector_id_connectors_id_fk" FOREIGN KEY ("connector_id") REFERENCES "public"."connectors"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 CREATE UNIQUE INDEX "connector_tool_registry_tool_uq" ON "connector_tool_registry" USING btree ("tenant_connector_id","tool_name");--> statement-breakpoint
@@ -61,7 +61,4 @@ CREATE INDEX "connectors_status_idx" ON "connectors" USING btree ("status");--> 
 CREATE UNIQUE INDEX "tenant_connectors_tenant_connector_uq" ON "tenant_connectors" USING btree ("tenant_id","connector_id");--> statement-breakpoint
 CREATE INDEX "tenant_connectors_tenant_idx" ON "tenant_connectors" USING btree ("tenant_id");--> statement-breakpoint
 CREATE INDEX "tenant_connectors_status_idx" ON "tenant_connectors" USING btree ("status");--> statement-breakpoint
-ALTER TABLE "document_annotation_comments" ADD CONSTRAINT "document_annotation_comments_issue_comment_id_issue_comments_id_fk" FOREIGN KEY ("issue_comment_id") REFERENCES "public"."issue_comments"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "issue_comments" ADD CONSTRAINT "issue_comments_deleted_by_agent_id_agents_id_fk" FOREIGN KEY ("deleted_by_agent_id") REFERENCES "public"."agents"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "issue_comments" ADD CONSTRAINT "issue_comments_deleted_by_run_id_heartbeat_runs_id_fk" FOREIGN KEY ("deleted_by_run_id") REFERENCES "public"."heartbeat_runs"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
-CREATE INDEX "document_annotation_comments_issue_comment_idx" ON "document_annotation_comments" USING btree ("issue_comment_id");
+CREATE INDEX IF NOT EXISTS "document_annotation_comments_issue_comment_idx" ON "document_annotation_comments" USING btree ("issue_comment_id");

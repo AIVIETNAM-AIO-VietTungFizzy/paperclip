@@ -64,9 +64,13 @@ import { isAutomaticRecoverySuppressedByPauseHold } from "./pause-hold-guard.js"
 
 const EXECUTION_PATH_HEARTBEAT_RUN_STATUSES = ["queued", "running", "scheduled_retry"] as const;
 const UNSUCCESSFUL_HEARTBEAT_RUN_TERMINAL_STATUSES = ["failed", "cancelled", "timed_out"] as const;
-export const ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS = 60 * 60 * 1000;
+export const ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS = 2 * 60 * 60 * 1000;
 export const ACTIVE_RUN_OUTPUT_CRITICAL_THRESHOLD_MS = 4 * 60 * 60 * 1000;
 export const ACTIVE_RUN_OUTPUT_CONTINUE_REARM_MS = 30 * 60 * 1000;
+export const ACTIVE_RUN_OUTPUT_FALSE_POSITIVE_COOLDOWN_MS = 2 * 60 * 60 * 1000;
+export const ACTIVE_RUN_OUTPUT_SLOW_MODEL_SUSPICION_THRESHOLD_MS = 4 * 60 * 60 * 1000;
+export const ACTIVE_RUN_OUTPUT_SLOW_MODEL_CRITICAL_THRESHOLD_MS = 8 * 60 * 60 * 1000;
+const SLOW_MODEL_PATTERNS = ["deepseek"];
 const ACTIVE_RUN_OUTPUT_EVIDENCE_TAIL_BYTES = 8 * 1024;
 const STRANDED_ISSUE_RECOVERY_ORIGIN_KIND = RECOVERY_ORIGIN_KINDS.strandedIssueRecovery;
 const STALE_ACTIVE_RUN_EVALUATION_ORIGIN_KIND = RECOVERY_ORIGIN_KINDS.staleActiveRunEvaluation;
@@ -803,6 +807,21 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     return startedAt ? Math.max(0, now.getTime() - startedAt.getTime()) : null;
   }
 
+  function isSlowModelAgent(agent: { adapterConfig?: { model?: string } | null; runtimeConfig?: { model?: string } | null } | null | undefined) {
+    if (!agent) return false;
+    const model = agent.adapterConfig?.model ?? agent.runtimeConfig?.model ?? "";
+    if (typeof model !== "string") return false;
+    return SLOW_MODEL_PATTERNS.some((pattern) => model.toLowerCase().includes(pattern));
+  }
+
+  function suspicionThresholdMsForAgent(agent: { adapterConfig?: { model?: string } | null; runtimeConfig?: { model?: string } | null } | null | undefined) {
+    return isSlowModelAgent(agent) ? ACTIVE_RUN_OUTPUT_SLOW_MODEL_SUSPICION_THRESHOLD_MS : ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS;
+  }
+
+  function criticalThresholdMsForAgent(agent: { adapterConfig?: { model?: string } | null; runtimeConfig?: { model?: string } | null } | null | undefined) {
+    return isSlowModelAgent(agent) ? ACTIVE_RUN_OUTPUT_SLOW_MODEL_CRITICAL_THRESHOLD_MS : ACTIVE_RUN_OUTPUT_CRITICAL_THRESHOLD_MS;
+  }
+
   async function latestActiveOutputQuietUntilDecision(companyId: string, runId: string, now = new Date()) {
     const [row] = await db
       .select()
@@ -813,6 +832,24 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           eq(heartbeatRunWatchdogDecisions.runId, runId),
           inArray(heartbeatRunWatchdogDecisions.decision, ["snooze", "continue"]),
           gt(heartbeatRunWatchdogDecisions.snoozedUntil, now),
+        ),
+      )
+      .orderBy(desc(heartbeatRunWatchdogDecisions.createdAt))
+      .limit(1);
+    return row ?? null;
+  }
+
+  async function latestFalsePositiveCooldownDecision(companyId: string, runId: string, now = new Date()) {
+    const cooldownBefore = new Date(now.getTime() - ACTIVE_RUN_OUTPUT_FALSE_POSITIVE_COOLDOWN_MS);
+    const [row] = await db
+      .select()
+      .from(heartbeatRunWatchdogDecisions)
+      .where(
+        and(
+          eq(heartbeatRunWatchdogDecisions.companyId, companyId),
+          eq(heartbeatRunWatchdogDecisions.runId, runId),
+          eq(heartbeatRunWatchdogDecisions.decision, "dismissed_false_positive"),
+          gt(heartbeatRunWatchdogDecisions.createdAt, cooldownBefore),
         ),
       )
       .orderBy(desc(heartbeatRunWatchdogDecisions.createdAt))
@@ -844,26 +881,55 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     return row ?? null;
   }
 
+  async function findMostRecentClosedStaleRunEvaluation(companyId: string, runId: string) {
+    const [row] = await db
+      .select({
+        id: issues.id,
+        identifier: issues.identifier,
+        status: issues.status,
+        completedAt: issues.completedAt,
+      })
+      .from(issues)
+      .where(
+        and(
+          eq(issues.companyId, companyId),
+          eq(issues.originKind, STALE_ACTIVE_RUN_EVALUATION_ORIGIN_KIND),
+          eq(issues.originId, runId),
+          isNull(issues.hiddenAt),
+          inArray(issues.status, ["done", "cancelled"]),
+        ),
+      )
+      .orderBy(desc(issues.completedAt))
+      .limit(1);
+    return row ?? null;
+  }
+
   async function buildRunOutputSilence(
     run: Pick<
       typeof heartbeatRuns.$inferSelect,
       "id" | "companyId" | "status" | "lastOutputAt" | "lastOutputSeq" | "lastOutputStream" | "processStartedAt" | "startedAt" | "createdAt"
     >,
     now = new Date(),
+    agent?: Pick<typeof agents.$inferSelect, "adapterConfig" | "runtimeConfig"> | null,
   ): Promise<RunOutputSilenceSummary> {
-    const [quietUntilDecision, evaluation] = await Promise.all([
+    const [quietUntilDecision, evaluation, falsePositiveCooldown] = await Promise.all([
       latestActiveOutputQuietUntilDecision(run.companyId, run.id, now),
       findOpenStaleRunEvaluation(run.companyId, run.id),
+      latestFalsePositiveCooldownDecision(run.companyId, run.id, now),
     ]);
     const silenceStartedAt = silenceStartedAtForRun(run);
     const silenceAgeMs = run.status === "running" ? silenceAgeMsForRun(run, now) : null;
+    const suspicionThresholdMs = suspicionThresholdMsForAgent(agent);
+    const criticalThresholdMs = criticalThresholdMsForAgent(agent);
     const level = run.status !== "running"
       ? "not_applicable"
       : quietUntilDecision
         ? "snoozed"
-        : (silenceAgeMs ?? 0) >= ACTIVE_RUN_OUTPUT_CRITICAL_THRESHOLD_MS
+        : falsePositiveCooldown
+          ? "snoozed"
+          : (silenceAgeMs ?? 0) >= criticalThresholdMs
           ? "critical"
-          : (silenceAgeMs ?? 0) >= ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS
+          : (silenceAgeMs ?? 0) >= suspicionThresholdMs
             ? "suspicious"
             : "ok";
     return {
@@ -875,8 +941,8 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       silenceStartedAt,
       silenceAgeMs,
       level,
-      suspicionThresholdMs: ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS,
-      criticalThresholdMs: ACTIVE_RUN_OUTPUT_CRITICAL_THRESHOLD_MS,
+      suspicionThresholdMs,
+      criticalThresholdMs,
       snoozedUntil: quietUntilDecision?.snoozedUntil ?? null,
       evaluationIssueId: evaluation?.id ?? null,
       evaluationIssueIdentifier: evaluation?.identifier ?? null,
@@ -1503,7 +1569,8 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       prefix,
       now: input.now,
     });
-    const level = (evidence.silenceAgeMs ?? 0) >= ACTIVE_RUN_OUTPUT_CRITICAL_THRESHOLD_MS ? "critical" : "suspicious";
+    const criticalThresholdMs = criticalThresholdMsForAgent(runningAgent);
+    const level = (evidence.silenceAgeMs ?? 0) >= criticalThresholdMs ? "critical" : "suspicious";
     if (existing) {
       if (level === "critical" && existing.priority !== "high") {
         await issuesSvc.update(existing.id, {
@@ -1531,6 +1598,22 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         });
       }
       return { kind: "existing" as const, evaluationIssueId: existing.id };
+    }
+
+    const recentClosed = await findMostRecentClosedStaleRunEvaluation(input.run.companyId, input.run.id);
+    if (recentClosed) {
+      const cooldownBefore = new Date(input.now.getTime() - ACTIVE_RUN_OUTPUT_FALSE_POSITIVE_COOLDOWN_MS);
+      if (recentClosed.completedAt && recentClosed.completedAt > cooldownBefore) {
+        await db.insert(heartbeatRunWatchdogDecisions).values({
+          companyId: input.run.companyId,
+          runId: input.run.id,
+          evaluationIssueId: recentClosed.id,
+          decision: "dismissed_false_positive",
+          reason: `Previous evaluation ${recentClosed.identifier} was closed as false positive; cooldown active.`,
+          createdByRunId: input.run.id,
+        });
+        return { kind: "snoozed" as const };
+      }
     }
 
     const ownerAgentId = await resolveStaleRunOwnerAgentId({ run: input.run, runningAgent, sourceIssue });
@@ -1649,11 +1732,23 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         result.snoozed += 1;
         continue;
       }
+      if (await latestFalsePositiveCooldownDecision(run.companyId, run.id, now)) {
+        result.snoozed += 1;
+        continue;
+      }
+      const runningAgent = await getAgent(run.agentId);
+      const silenceAge = silenceAgeMsForRun(run, now);
+      const suspicionThreshold = suspicionThresholdMsForAgent(runningAgent);
+      if (silenceAge !== null && silenceAge < suspicionThreshold) {
+        result.snoozed += 1;
+        continue;
+      }
       const outcome = await createOrUpdateStaleRunEvaluation({ run, now });
       if (outcome.kind === "created") result.created += 1;
       else if (outcome.kind === "existing") result.existing += 1;
       else if (outcome.kind === "escalated") result.escalated += 1;
       else if (outcome.kind === "folded") result.folded += 1;
+      else if (outcome.kind === "snoozed") result.snoozed += 1;
       else result.skipped += 1;
       if ("evaluationIssueId" in outcome && outcome.evaluationIssueId) {
         result.evaluationIssueIds.push(outcome.evaluationIssueId);

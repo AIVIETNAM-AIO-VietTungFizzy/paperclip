@@ -3,7 +3,7 @@ import type { Db } from "@paperclipai/db";
 import { connectors, tenantConnectors } from "@paperclipai/db";
 import type { EntitlementStore } from "./entitlement-store.js";
 
-export function connectorEntitlementService(db: Db, entitlementStore: EntitlementStore) {
+export function connectorEntitlementService(db: Db, entitlementStore?: EntitlementStore) {
   return {
     canEnableConnector: async (
       companyId: string,
@@ -19,7 +19,7 @@ export function connectorEntitlementService(db: Db, entitlementStore: Entitlemen
       if (!connector) return { allowed: false, reason: "connector_not_found" };
       if (connector.status !== "active") return { allowed: false, reason: "connector_not_active" };
 
-      const tier = entitlementStore.getTierForCompany(companyId) ?? "free";
+      const tier = entitlementStore?.getTierForCompany(companyId) ?? "free";
       const allowed = connector.allowedPackages.length === 0 || connector.allowedPackages.includes(tier);
 
       if (!allowed) return { allowed: false, reason: `package ${tier} not in allowed packages` };
@@ -41,7 +41,7 @@ export function connectorEntitlementService(db: Db, entitlementStore: Entitlemen
     },
 
     getEntitledConnectorIds: async (companyId: string): Promise<string[]> => {
-      const tier = entitlementStore.getTierForCompany(companyId) ?? "free";
+      const tier = entitlementStore?.getTierForCompany(companyId) ?? "free";
       const rows = await db
         .select({ id: connectors.id, allowedPackages: connectors.allowedPackages })
         .from(connectors)

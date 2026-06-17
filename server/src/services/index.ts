@@ -1,4 +1,3 @@
-export { connectorEntitlementService } from "./connector-entitlement.js";
 export { companyService } from "./companies.js";
 export { companyArtifactsService } from "./company-artifacts.js";
 export { companySearchService } from "./company-search.js";

@@ -44,8 +44,9 @@ export const SANDBOX_INSTALL_COMMAND =
   'fi; ' +
   'fi';
 
-// OpenCode's own sensible default when nothing overrides it (direct OpenAI usage).
-const FALLBACK_OPENCODE_LOCAL_MODEL = "openai/gpt-5.2-codex";
+// Sensible default for local deployments. Deployments that route
+// OpenCode through a different provider inject OPENCODE_DEFAULT_MODEL instead.
+const FALLBACK_OPENCODE_LOCAL_MODEL = "opencode/big-pickle";
 
 // Deployments that route OpenCode through a non-OpenAI provider (e.g. a LiteLLM
 // gateway serving `litellm/<model>` ids) inject OPENCODE_DEFAULT_MODEL and
@@ -78,10 +79,11 @@ function buildModelsList(): Array<{ id: string; label: string }> {
   }
   return [
     { id: DEFAULT_OPENCODE_LOCAL_MODEL, label: DEFAULT_OPENCODE_LOCAL_MODEL },
-    { id: "openai/gpt-5.4", label: "openai/gpt-5.4" },
-    { id: "openai/gpt-5.2", label: "openai/gpt-5.2" },
-    { id: "openai/gpt-5.1-codex-max", label: "openai/gpt-5.1-codex-max" },
-    { id: "openai/gpt-5.1-codex-mini", label: "openai/gpt-5.1-codex-mini" },
+    { id: "opencode/big-pickle", label: "opencode/big-pickle" },
+    { id: "opencode/deepseek-v4-flash-free", label: "opencode/deepseek-v4-flash-free" },
+    { id: "opencode/mimo-v2.5-free", label: "opencode/mimo-v2.5-free" },
+    { id: "opencode/nemotron-3-ultra-free", label: "opencode/nemotron-3-ultra-free" },
+    { id: "opencode/north-mini-code-free", label: "opencode/north-mini-code-free" },
   ];
 }
 

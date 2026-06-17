@@ -234,6 +234,9 @@ export {
   ACTIVE_RUN_OUTPUT_CONTINUE_REARM_MS,
   ACTIVE_RUN_OUTPUT_CRITICAL_THRESHOLD_MS,
   ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS,
+  ACTIVE_RUN_OUTPUT_FALSE_POSITIVE_COOLDOWN_MS,
+  ACTIVE_RUN_OUTPUT_SLOW_MODEL_SUSPICION_THRESHOLD_MS,
+  ACTIVE_RUN_OUTPUT_SLOW_MODEL_CRITICAL_THRESHOLD_MS,
 } from "./recovery/service.js";
 export const ACTIVE_RUN_OUTPUT_PROGRESS_FLUSH_INTERVAL_MS = 60 * 1000;
 export const BOUNDED_TRANSIENT_HEARTBEAT_RETRY_DELAYS_MS = [
@@ -7502,8 +7505,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       "id" | "companyId" | "status" | "lastOutputAt" | "lastOutputSeq" | "lastOutputStream" | "processStartedAt" | "startedAt" | "createdAt"
     >,
     now = new Date(),
+    agent?: Pick<typeof agents.$inferSelect, "adapterConfig" | "runtimeConfig"> | null,
   ) {
-    return recovery.buildRunOutputSilence(run, now);
+    return recovery.buildRunOutputSilence(run, now, agent);
   }
 
   async function buildIssueGraphLivenessAutoRecoveryPreview(opts?: { lookbackHours?: number; now?: Date }) {

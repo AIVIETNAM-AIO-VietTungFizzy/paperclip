@@ -51,10 +51,11 @@ export function connectorRoutes(db: Db) {
   });
 
   router.get("/connectors/:id", async (req, res) => {
+    const id = req.params.id as string;
     const connector = await db
       .select()
       .from(connectorsTable)
-      .where(eq(connectorsTable.id, req.params.id))
+      .where(eq(connectorsTable.id, id))
       .limit(1)
       .then((r) => r[0]);
 
@@ -64,10 +65,11 @@ export function connectorRoutes(db: Db) {
 
   router.patch("/connectors/:id", validate(updateConnectorSchema), async (req, res) => {
     assertBoard(req);
+    const id = req.params.id as string;
     const existing = await db
       .select()
       .from(connectorsTable)
-      .where(eq(connectorsTable.id, req.params.id))
+      .where(eq(connectorsTable.id, id))
       .limit(1)
       .then((r) => r[0]);
 
@@ -76,7 +78,7 @@ export function connectorRoutes(db: Db) {
     const updated = await db
       .update(connectorsTable)
       .set({ ...req.body, updatedAt: new Date() })
-      .where(eq(connectorsTable.id, req.params.id))
+      .where(eq(connectorsTable.id, id))
       .returning();
 
     await logActivity(db, {
@@ -85,7 +87,7 @@ export function connectorRoutes(db: Db) {
       actorId: req.actor.userId ?? "board",
       action: "connector.updated",
       entityType: "connector",
-      entityId: req.params.id,
+      entityId: id,
       details: { changes: Object.keys(req.body) },
     });
 
@@ -94,16 +96,17 @@ export function connectorRoutes(db: Db) {
 
   router.delete("/connectors/:id", async (req, res) => {
     assertBoard(req);
+    const id = req.params.id as string;
     const existing = await db
       .select()
       .from(connectorsTable)
-      .where(eq(connectorsTable.id, req.params.id))
+      .where(eq(connectorsTable.id, id))
       .limit(1)
       .then((r) => r[0]);
 
     if (!existing) { res.status(404).json({ error: "connector_not_found" }); return; }
 
-    await db.delete(connectorsTable).where(eq(connectorsTable.id, req.params.id));
+    await db.delete(connectorsTable).where(eq(connectorsTable.id, id));
 
     await logActivity(db, {
       companyId: "system",
@@ -111,7 +114,7 @@ export function connectorRoutes(db: Db) {
       actorId: req.actor.userId ?? "board",
       action: "connector.deleted",
       entityType: "connector",
-      entityId: req.params.id,
+      entityId: id,
       details: { connectorKey: existing.connectorKey },
     });
 
@@ -120,7 +123,7 @@ export function connectorRoutes(db: Db) {
 
   router.get("/companies/:companyId/connectors", async (req, res) => {
     assertBoard(req);
-    const companyId = req.params.companyId;
+    const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
 
     const enabled = await db
@@ -149,8 +152,8 @@ export function connectorRoutes(db: Db) {
     validate(enableConnectorSchema),
     async (req, res) => {
       assertBoard(req);
-      const companyId = req.params.companyId;
-      const connectorId = req.params.connectorId;
+      const companyId = req.params.companyId as string;
+      const connectorId = req.params.connectorId as string;
       assertCompanyAccess(req, companyId);
 
       const connector = await db
@@ -202,8 +205,8 @@ export function connectorRoutes(db: Db) {
     validate(updateTenantConnectorSchema),
     async (req, res) => {
       assertBoard(req);
-      const companyId = req.params.companyId;
-      const connectorId = req.params.connectorId;
+      const companyId = req.params.companyId as string;
+      const connectorId = req.params.connectorId as string;
       assertCompanyAccess(req, companyId);
 
       const existing = await db
@@ -235,8 +238,8 @@ export function connectorRoutes(db: Db) {
 
   router.post("/companies/:companyId/connectors/:connectorId/disable", async (req, res) => {
     assertBoard(req);
-    const companyId = req.params.companyId;
-    const connectorId = req.params.connectorId;
+    const companyId = req.params.companyId as string;
+    const connectorId = req.params.connectorId as string;
     assertCompanyAccess(req, companyId);
 
     const existing = await db
