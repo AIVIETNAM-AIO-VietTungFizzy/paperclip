@@ -11,6 +11,7 @@ import {
   FolderKanban,
   Users,
   Settings,
+  Plug,
 } from "lucide-react";
 import { SidebarSection } from "./SidebarSection";
 import { SidebarNavItem } from "./SidebarNavItem";
@@ -63,6 +64,7 @@ export function Sidebar() {
 
         <SidebarSection label="Governance">
           <SidebarNavItem to="/approvals/pending" label="Approvals" icon={ShieldCheck} />
+          <SidebarNavItem to="/connectors" label="Connectors" icon={Plug} />
           <SidebarNavItem to="/costs" label="Costs" icon={DollarSign} />
           <SidebarNavItem to="/activity" label="Activity" icon={History} />
         </SidebarSection>

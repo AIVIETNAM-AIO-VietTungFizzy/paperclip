@@ -23,6 +23,7 @@ import { Inbox } from "./pages/Inbox";
 import { CompanySettings } from "./pages/CompanySettings";
 import { CompanyAccess } from "./pages/CompanyAccess";
 import { CompanyInvites } from "./pages/CompanyInvites";
+import { Connectors } from "./pages/Connectors";
 import { OrgChart } from "./pages/OrgChart";
 import { NewAgent } from "./pages/NewAgent";
 import { AuthPage } from "./pages/Auth";
@@ -48,6 +49,7 @@ function boardRoutes() {
       <Route path="settings" element={<Navigate to="/company/settings" replace />} />
       <Route path="settings/*" element={<Navigate to="/company/settings" replace />} />
       <Route path="org" element={<OrgChart />} />
+      <Route path="connectors" element={<Connectors />} />
       <Route path="work" element={<Navigate to="/issues" replace />} />
       <Route path="work/tasks" element={<Navigate to="/issues" replace />} />
       <Route path="work/projects" element={<Navigate to="/projects" replace />} />
@@ -263,6 +265,7 @@ export function App() {
           <Route path="work" element={<UnprefixedBoardRedirect />} />
           <Route path="work/*" element={<UnprefixedBoardRedirect />} />
           <Route path="org" element={<UnprefixedBoardRedirect />} />
+          <Route path="connectors" element={<UnprefixedBoardRedirect />} />
           <Route path="settings" element={<LegacySettingsRedirect />} />
           <Route path="settings/*" element={<LegacySettingsRedirect />} />
           <Route path="agents" element={<UnprefixedBoardRedirect />} />

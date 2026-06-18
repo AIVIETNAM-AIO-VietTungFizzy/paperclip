@@ -42,6 +42,22 @@ vi.mock("../services/activity-log.js", () => ({
   logActivity: mockLogActivity,
 }));
 
+const mockClientListTools = vi.hoisted(() => vi.fn());
+const mockClientConnect = vi.hoisted(() => vi.fn());
+const mockClientClose = vi.hoisted(() => vi.fn().mockResolvedValue(undefined));
+
+vi.mock("@modelcontextprotocol/sdk/client/index.js", () => ({
+  Client: vi.fn(() => ({
+    connect: mockClientConnect,
+    listTools: mockClientListTools,
+    close: mockClientClose,
+  })),
+}));
+
+vi.mock("@modelcontextprotocol/sdk/client/streamableHttp.js", () => ({
+  StreamableHTTPClientTransport: vi.fn(),
+}));
+
 let connectorRoutes: typeof import("../routes/connectors.js").connectorRoutes;
 let errorHandler: typeof import("../middleware/index.js").errorHandler;
 
@@ -320,6 +336,68 @@ describe("connector routes", () => {
         .send({});
 
       expect(res.status).toBe(404);
+    });
+  });
+
+  describe("POST /api/connectors/test-endpoint", () => {
+    beforeEach(() => {
+      mockClientConnect.mockReset();
+      mockClientListTools.mockReset();
+      mockClientClose.mockReset();
+    });
+
+    it("returns 400 when endpointUrl is missing", async () => {
+      const app = createApp();
+      const res = await request(app)
+        .post("/api/connectors/test-endpoint")
+        .send({});
+
+      expect(res.status).toBe(400);
+      expect(res.body.ok).toBe(false);
+      expect(res.body.error).toContain("required");
+    });
+
+    it("returns tools on successful probe", async () => {
+      mockClientConnect.mockResolvedValue(undefined);
+      mockClientListTools.mockResolvedValue({
+        tools: [{ name: "search", description: "Search tool" }],
+      });
+
+      const app = createApp();
+      const res = await request(app)
+        .post("/api/connectors/test-endpoint")
+        .send({ endpointUrl: "http://localhost:9999/mcp" });
+
+      expect(res.status).toBe(200);
+      expect(res.body.ok).toBe(true);
+      expect(res.body.tools).toEqual([{ name: "search", description: "Search tool" }]);
+    });
+
+    it("returns error on probe failure", async () => {
+      mockClientConnect.mockRejectedValue(new Error("ECONNREFUSED"));
+
+      const app = createApp();
+      const res = await request(app)
+        .post("/api/connectors/test-endpoint")
+        .send({ endpointUrl: "http://invalid:9999/mcp" });
+
+      expect(res.status).toBe(200);
+      expect(res.body.ok).toBe(false);
+      expect(res.body.error).toBeTruthy();
+    });
+
+    it("does NOT write to database", async () => {
+      mockClientConnect.mockResolvedValue(undefined);
+      mockClientListTools.mockResolvedValue({ tools: [] });
+
+      const app = createApp();
+      await request(app)
+        .post("/api/connectors/test-endpoint")
+        .send({ endpointUrl: "http://localhost:9999/mcp" });
+
+      expect(mockDb.insert).not.toHaveBeenCalled();
+      expect(mockDb.update).not.toHaveBeenCalled();
+      expect(mockDb.delete).not.toHaveBeenCalled();
     });
   });
 
