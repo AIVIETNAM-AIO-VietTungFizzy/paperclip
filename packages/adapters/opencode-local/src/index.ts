@@ -53,7 +53,7 @@ const FALLBACK_OPENCODE_LOCAL_MODEL = "opencode/big-pickle";
 // OPENCODE_AVAILABLE_MODELS into the server env so new agents default to a model
 // the container can actually reach. Read at module load (server env), not per-run.
 function envDefaultModel(): string {
-  const v = process.env.OPENCODE_DEFAULT_MODEL;
+  const v = typeof process !== "undefined" ? process.env.OPENCODE_DEFAULT_MODEL : undefined;
   return typeof v === "string" && v.trim() ? v.trim() : FALLBACK_OPENCODE_LOCAL_MODEL;
 }
 
@@ -67,7 +67,7 @@ export function isValidOpenCodeModelId(value: unknown): value is string {
 }
 
 function buildModelsList(): Array<{ id: string; label: string }> {
-  const raw = process.env.OPENCODE_AVAILABLE_MODELS;
+  const raw = typeof process !== "undefined" ? process.env.OPENCODE_AVAILABLE_MODELS : undefined;
   if (typeof raw === "string" && raw.trim()) {
     // Default first, then the rest of the injected ids (de-duped).
     const ids = raw.split(",").map((s) => s.trim()).filter(Boolean);
