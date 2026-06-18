@@ -2,6 +2,7 @@ import { Router } from "express";
 import type { Db } from "@paperclipai/db";
 import { connectors as connectorsTable, tenantConnectors, connectorToolRegistry } from "@paperclipai/db";
 import { eq, and } from "drizzle-orm";
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { validate } from "../middleware/validate.js";
 import { assertBoard, assertCompanyAccess } from "./authz.js";
 import { logActivity } from "../services/activity-log.js";
@@ -48,6 +49,75 @@ export function connectorRoutes(db: Db) {
     });
 
     res.status(201).json(connector);
+  });
+
+  router.post("/connectors/test-endpoint", async (req, res) => {
+    const { endpointUrl, authType, configuration } = req.body as {
+      endpointUrl?: string;
+      authType?: string | null;
+      configuration?: Record<string, unknown> | null;
+    };
+
+    if (!endpointUrl || typeof endpointUrl !== "string") {
+      res.status(400).json({ ok: false, error: "Endpoint URL is required" });
+      return;
+    }
+
+    let headers: Record<string, string> | undefined;
+    if (authType && authType !== "none") {
+      const config = configuration ?? {};
+      if (authType === "apikey") {
+        const apiKey = config.apiKey as string | undefined;
+        const headerName = (config.headerName as string) || "X-API-Key";
+        if (apiKey) {
+          headers = { [headerName]: apiKey };
+        }
+      } else if (authType === "bearer") {
+        const token = config.token as string | undefined;
+        if (token) {
+          headers = { Authorization: `Bearer ${token}` };
+        }
+      } else if (authType === "basic") {
+        const username = config.username as string | undefined;
+        const password = config.password as string | undefined;
+        if (username && password) {
+          headers = { Authorization: `Basic ${Buffer.from(`${username}:${password}`).toString("base64")}` };
+        }
+      }
+    }
+
+    try {
+      const { StreamableHTTPClientTransport } = await import(
+        "@modelcontextprotocol/sdk/client/streamableHttp.js"
+      );
+
+      const transport = new StreamableHTTPClientTransport(
+        new URL(endpointUrl),
+        headers ? { requestInit: { headers } } : undefined,
+      );
+
+      const client = new Client(
+        { name: "paperclip-connector-test", version: "1.0.0" },
+        { capabilities: {} },
+      );
+
+      await client.connect(transport);
+
+      const abortController = new AbortController();
+      const timeout = setTimeout(() => abortController.abort(), 10_000);
+
+      try {
+        const result = await client.listTools(undefined, { signal: abortController.signal });
+        const tools = (result.tools as Array<{ name: string; description?: string }>) ?? [];
+        res.json({ ok: true, tools });
+      } finally {
+        clearTimeout(timeout);
+        await client.close().catch(() => {});
+      }
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      res.json({ ok: false, error: message.slice(0, 500) });
+    }
   });
 
   router.get("/connectors/:id", async (req, res) => {

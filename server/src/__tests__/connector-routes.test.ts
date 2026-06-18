@@ -18,6 +18,30 @@ const mockLogActivity = vi.hoisted(() => vi.fn());
 const mockCanEnableConnector = vi.hoisted(() => vi.fn().mockResolvedValue({ allowed: true }));
 const mockHandshake = vi.hoisted(() => vi.fn().mockResolvedValue({ success: true }));
 
+const mockMCPClient = vi.hoisted(() => {
+  const mockClient = {
+    connect: vi.fn().mockResolvedValue(undefined),
+    listTools: vi.fn(),
+    close: vi.fn().mockResolvedValue(undefined),
+    request: vi.fn(),
+  };
+  return {
+    Client: vi.fn(function () { return mockClient; }),
+    __mockClient: mockClient,
+  };
+});
+
+vi.mock("@modelcontextprotocol/sdk/client/index.js", () => ({
+  Client: mockMCPClient.Client,
+}));
+
+vi.mock("@modelcontextprotocol/sdk/client/streamableHttp.js", () => {
+  const MockTransport = class {
+    constructor(url: URL, opts?: any) {}
+  };
+  return { StreamableHTTPClientTransport: MockTransport };
+});
+
 vi.mock("@paperclipai/db", () => ({
   connectors: mockConnectorsTable,
   tenantConnectors: mockTenantConnectorsTable,
@@ -320,6 +344,67 @@ describe("connector routes", () => {
         .send({});
 
       expect(res.status).toBe(404);
+    });
+  });
+
+  describe("POST /api/connectors/test-endpoint", () => {
+    beforeEach(() => {
+      vi.clearAllMocks();
+    });
+
+    it("returns error when endpointUrl is missing", async () => {
+      const app = createApp();
+      const res = await request(app)
+        .post("/api/connectors/test-endpoint")
+        .send({});
+
+      expect(res.status).toBe(400);
+      expect(res.body.ok).toBe(false);
+      expect(res.body.error).toContain("required");
+    });
+
+    it("returns tools on successful probe", async () => {
+      const fakeTools = [
+        { name: "get_weather", description: "Get weather data" },
+        { name: "send_email", description: "Send an email" },
+      ];
+      mockMCPClient.__mockClient.listTools.mockResolvedValue({ tools: fakeTools });
+
+      const app = createApp();
+      const res = await request(app)
+        .post("/api/connectors/test-endpoint")
+        .send({ endpointUrl: "http://localhost:9999/mcp" });
+
+      expect(res.status).toBe(200);
+      expect(res.body.ok).toBe(true);
+      expect(res.body.tools).toEqual(fakeTools);
+    });
+
+    it("returns error on probe failure", async () => {
+      mockMCPClient.__mockClient.connect.mockRejectedValue(new Error("Connection refused"));
+
+      const app = createApp();
+      const res = await request(app)
+        .post("/api/connectors/test-endpoint")
+        .send({ endpointUrl: "http://invalid:9999/mcp" });
+
+      expect(res.status).toBe(200);
+      expect(res.body.ok).toBe(false);
+      expect(res.body.error).toBeTruthy();
+    });
+
+    it("does NOT write to database", async () => {
+      mockMCPClient.__mockClient.listTools.mockResolvedValue({ tools: [] });
+
+      const app = createApp();
+      await request(app)
+        .post("/api/connectors/test-endpoint")
+        .send({ endpointUrl: "http://localhost:9999/mcp" });
+
+      expect(mockDb.select).not.toHaveBeenCalled();
+      expect(mockDb.insert).not.toHaveBeenCalled();
+      expect(mockDb.update).not.toHaveBeenCalled();
+      expect(mockDb.delete).not.toHaveBeenCalled();
     });
   });
 

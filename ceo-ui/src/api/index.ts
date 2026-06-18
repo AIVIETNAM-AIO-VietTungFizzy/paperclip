@@ -18,3 +18,5 @@ export { sidebarBadgesApi } from "./sidebarBadges";
 export { sidebarPreferencesApi } from "./sidebarPreferences";
 export { inboxDismissalsApi } from "./inboxDismissals";
 export { companySkillsApi } from "./companySkills";
+export { connectorsApi } from "./connectors";
+export type { Connector, TestEndpointResult } from "./connectors";

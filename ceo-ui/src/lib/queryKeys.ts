@@ -194,4 +194,8 @@ export const queryKeys = {
   adapters: {
     all: ["adapters"] as const,
   },
+  connectors: {
+    list: () => ["connectors"] as const,
+    detail: (id: string) => ["connectors", id] as const,
+  },
 };
