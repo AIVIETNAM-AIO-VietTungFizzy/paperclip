@@ -1,28 +1,5 @@
 import { Router } from "express";
-import { timingSafeEqual } from "node:crypto";
-
-function requireRuntimeAuth(req: import("express").Request): void {
-  const expectedToken = process.env.RUNTIME_SERVICE_TOKEN;
-  if (!expectedToken) {
-    throw Object.assign(new Error("runtime_service_token_required"), { status: 401 });
-  }
-
-  const serviceToken = req.header("x-service-token");
-  if (!serviceToken) {
-    throw Object.assign(new Error("runtime_service_token_required"), { status: 401 });
-  }
-
-  const expected = Buffer.from(expectedToken);
-  const provided = Buffer.from(serviceToken);
-
-  if (expected.length !== provided.length) {
-    throw Object.assign(new Error("runtime_service_token_required"), { status: 401 });
-  }
-
-  if (!timingSafeEqual(expected, provided)) {
-    throw Object.assign(new Error("runtime_service_token_required"), { status: 401 });
-  }
-}
+import { requireRuntimeAuth, handleRuntimeAuthError } from "./runtime-auth.js";
 
 export function createEnforcementProxy(): Router {
   const router = Router();
@@ -33,9 +10,9 @@ export function createEnforcementProxy(): Router {
     try {
       requireRuntimeAuth(req);
     } catch (err: unknown) {
-      const error = err as { status?: number; message?: string };
-      res.status(error.status ?? 401).json({ error: error.message ?? "runtime_service_token_required" });
-      return;
+      const handled = handleRuntimeAuthError(err);
+      if (handled) { res.status(handled.status).json(handled.body); return; }
+      throw err;
     }
 
     const { tenant_id, user_id, tool, risk_class, package_tier } = req.body as Record<string, unknown>;
@@ -69,9 +46,9 @@ export function createEnforcementProxy(): Router {
     try {
       requireRuntimeAuth(req);
     } catch (err: unknown) {
-      const error = err as { status?: number; message?: string };
-      res.status(error.status ?? 401).json({ error: error.message ?? "runtime_service_token_required" });
-      return;
+      const handled = handleRuntimeAuthError(err);
+      if (handled) { res.status(handled.status).json(handled.body); return; }
+      throw err;
     }
 
     const { trace_id, tenant_id, user_id, decision } = req.body as Record<string, unknown>;
