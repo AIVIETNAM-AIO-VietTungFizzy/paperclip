@@ -4,15 +4,62 @@ export default defineConfig({
   test: {
     environment: "node",
     isolate: true,
-    maxConcurrency: 1,
-    maxWorkers: 1,
-    minWorkers: 1,
-    pool: "forks",
-    sequence: {
-      concurrent: false,
-      hooks: "list",
-    },
-    setupFiles: ["./src/__tests__/setup-supertest.ts"],
-    exclude: [".worktrees/**", "node_modules/**"],
+    projects: [
+      {
+        extends: true,
+        test: {
+          name: "unit",
+          include: ["src/**/*.unit.test.ts", "src/**/__tests-unit__/**/*.test.ts"],
+          exclude: [
+            "src/__tests__/**",
+            "src/**/__tests-route__/**",
+            "**/*.route.test.ts",
+            "**/*.integration.test.ts",
+            ".worktrees/**",
+            "node_modules/**",
+          ],
+          pool: "forks",
+          maxConcurrency: 4,
+          setupFiles: [],
+        },
+      },
+      {
+        extends: true,
+        test: {
+          name: "route",
+          include: ["src/**/__tests-route__/**/*.test.ts", "src/**/*.route.test.ts"],
+          exclude: [
+            "src/__tests__/**",
+            "src/**/__tests-unit__/**",
+            ".worktrees/**",
+            "node_modules/**",
+          ],
+          pool: "forks",
+          maxConcurrency: 2,
+          setupFiles: ["./src/__tests-route__/setup-supertest.ts"],
+        },
+      },
+      {
+        extends: true,
+        test: {
+          name: "integration",
+          include: ["src/**/*.test.ts"],
+          exclude: [
+            "**/*.unit.test.ts",
+            "**/*.route.test.ts",
+            "src/**/__tests-unit__/**",
+            "src/**/__tests-route__/**",
+            ".worktrees/**",
+            "node_modules/**",
+          ],
+          pool: "forks",
+          maxConcurrency: 1,
+          maxWorkers: 1,
+          minWorkers: 1,
+          sequence: { concurrent: false, hooks: "list" },
+          setupFiles: ["./src/__tests__/setup-supertest.ts"],
+        },
+      },
+    ],
   },
 });
