@@ -5,5 +5,12 @@
     "rootDir": "src"
   },
   "include": ["src"],
-  "exclude": ["src/__tests__"]
+  "exclude": [
+    "src/__tests__",
+    "src/**/__tests-unit__",
+    "src/**/__tests-route__",
+    "src/**/*.unit.test.ts",
+    "src/**/*.route.test.ts",
+    "src/**/*.integration.test.ts"
+  ]
 }
