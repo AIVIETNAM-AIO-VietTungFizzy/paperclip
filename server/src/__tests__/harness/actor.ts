@@ -1,6 +1,6 @@
 import type { Express } from "express";
 
-type Actor = Express.Request["actor"];
+export type Actor = Express.Request["actor"];
 
 export function boardActor(companyId?: string, overrides: Partial<Actor> = {}): Actor {
   return {
