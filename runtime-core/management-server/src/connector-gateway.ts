@@ -1,6 +1,7 @@
 import { Router } from "express";
 import { z } from "zod";
 import { ConnectorClientPool } from "../modules/runtime/connector-client-pool.js";
+import { requireRuntimeAuth, handleRuntimeAuthError } from "./runtime-auth.js";
 
 const AnyResult = z.object({}).passthrough();
 
@@ -20,6 +21,14 @@ export function createConnectorGateway(): Router {
   const router = Router();
 
   router.post("/tools/list", async (req, res) => {
+    try {
+      requireRuntimeAuth(req);
+    } catch (err: unknown) {
+      const handled = handleRuntimeAuthError(err);
+      if (handled) { res.status(handled.status).json(handled.body); return; }
+      throw err;
+    }
+
     try {
       const tenantId = req.body.tenant_id || req.headers["x-tenant-id"];
       if (!tenantId) { res.status(400).json({ error: "tenant_id_required" }); return; }
@@ -79,6 +88,14 @@ export function createConnectorGateway(): Router {
 
   router.post("/tools/call", async (req, res) => {
     try {
+      requireRuntimeAuth(req);
+    } catch (err: unknown) {
+      const handled = handleRuntimeAuthError(err);
+      if (handled) { res.status(handled.status).json(handled.body); return; }
+      throw err;
+    }
+
+    try {
       const tenantId = req.body.tenant_id || req.headers["x-tenant-id"];
       const toolName: string = req.body.name ?? req.body.tool;
       const args: Record<string, unknown> = req.body.arguments ?? {};
@@ -115,6 +132,8 @@ export function createConnectorGateway(): Router {
         packageTier: string;
       };
 
+      const userId = req.body.user_id;
+
       const enforceResponse = await fetch(`${CP_BASE_URL}/api/core/enforce`, {
         method: "POST",
         headers: {
@@ -126,6 +145,7 @@ export function createConnectorGateway(): Router {
           tool: toolName,
           risk_class: "connector",
           package_tier: connInfo.packageTier,
+          ...(userId !== undefined && userId !== null ? { user_id: userId } : {}),
         }),
       });
 
