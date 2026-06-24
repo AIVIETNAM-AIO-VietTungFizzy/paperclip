@@ -14,11 +14,9 @@ function chainable(returnValue?: unknown): Chainable {
     },
   };
   const proxied = new Proxy(obj, handler);
-  if (returnValue !== undefined) {
-    obj.then = vi.fn((onFulfilled: (v: unknown) => unknown) =>
-      Promise.resolve(onFulfilled ? onFulfilled(returnValue) : returnValue),
-    );
-  }
+  obj.then = vi.fn((onFulfilled: (v: unknown) => unknown) =>
+    Promise.resolve(onFulfilled ? onFulfilled(returnValue) : returnValue),
+  );
   return proxied;
 }
 

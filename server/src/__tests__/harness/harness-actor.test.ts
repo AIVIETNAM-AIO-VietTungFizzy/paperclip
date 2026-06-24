@@ -88,4 +88,10 @@ describe("harness/mocks", () => {
     const deleted = await db.delete({} as any).where();
     expect(deleted).toBeUndefined();
   });
+
+  it("mockDb default delete chain is thenable and resolves to undefined", async () => {
+    const db = mockDb();
+    const result = await db.delete({} as any).where();
+    expect(result).toBeUndefined();
+  });
 });

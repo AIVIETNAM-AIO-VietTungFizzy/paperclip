@@ -9,7 +9,7 @@ export default defineConfig({
         extends: true,
         test: {
           name: "unit",
-          include: ["src/**/*.{unit,}.test.ts", "src/**/__tests-unit__/**/*.test.ts"],
+          include: ["src/**/*.unit.test.ts", "src/**/__tests-unit__/**/*.test.ts"],
           exclude: [
             "src/__tests__/**",
             "src/**/__tests-route__/**",
@@ -20,7 +20,6 @@ export default defineConfig({
           ],
           pool: "forks",
           maxConcurrency: 4,
-          passWithNoTests: true,
           setupFiles: [],
         },
       },
@@ -37,7 +36,6 @@ export default defineConfig({
           ],
           pool: "forks",
           maxConcurrency: 2,
-          passWithNoTests: true,
           setupFiles: ["./src/__tests-route__/setup-supertest.ts"],
         },
       },
@@ -45,8 +43,15 @@ export default defineConfig({
         extends: true,
         test: {
           name: "integration",
-          include: ["src/__tests__/**/*.test.ts"],
-          exclude: ["**/*.unit.test.ts", "**/*.route.test.ts", ".worktrees/**", "node_modules/**"],
+          include: ["src/**/*.test.ts"],
+          exclude: [
+            "**/*.unit.test.ts",
+            "**/*.route.test.ts",
+            "src/**/__tests-unit__/**",
+            "src/**/__tests-route__/**",
+            ".worktrees/**",
+            "node_modules/**",
+          ],
           pool: "forks",
           maxConcurrency: 1,
           maxWorkers: 1,
