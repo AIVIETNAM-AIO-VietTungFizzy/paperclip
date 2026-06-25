@@ -192,3 +192,57 @@ describe("connectorRefreshService.refreshConnectorTools", () => {
     expect(result.error).toBe("no_endpoint_url");
   });
 });
+
+describe("probeConnectorTools", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    requestResult = null;
+    shouldRejectConnect = null;
+    mockClient.instances.length = 0;
+  });
+
+  afterEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("probes an arbitrary endpoint URL and returns the tool list (no DB access)", async () => {
+    requestResult = {
+      tools: [
+        { name: "get_weather", description: "Get weather", inputSchema: {} },
+      ],
+    };
+
+    const { probeConnectorTools } = await import("../services/connector-refresh.js");
+    const result = await probeConnectorTools("http://localhost:9999/mcp");
+
+    expect(result.ok).toBe(true);
+    expect(result.tools).toHaveLength(1);
+    expect(result.tools?.[0].name).toBe("get_weather");
+    expect(result.error).toBeUndefined();
+  });
+
+  it("passes auth headers through to the transport", async () => {
+    requestResult = { tools: [] };
+
+    const { probeConnectorTools } = await import("../services/connector-refresh.js");
+    await probeConnectorTools("http://localhost:9999/mcp", {
+      headers: { Authorization: "Bearer secret" },
+    });
+
+    expect(mockStreamableHTTPClientTransport).toHaveBeenCalledWith(
+      new URL("http://localhost:9999/mcp"),
+      expect.objectContaining({ requestInit: { headers: { Authorization: "Bearer secret" } } }),
+    );
+  });
+
+  it("returns ok:false with an error when the probe fails", async () => {
+    shouldRejectConnect = "Connection refused";
+
+    const { probeConnectorTools } = await import("../services/connector-refresh.js");
+    const result = await probeConnectorTools("http://invalid:9999/mcp");
+
+    expect(result.ok).toBe(false);
+    expect(result.error).toBe("Connection refused");
+    expect(result.tools).toBeUndefined();
+  });
+});

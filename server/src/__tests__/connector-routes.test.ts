@@ -18,6 +18,7 @@ const mockLogActivity = vi.hoisted(() => vi.fn());
 const mockCanEnableConnector = vi.hoisted(() => vi.fn().mockResolvedValue({ allowed: true }));
 const mockHandshake = vi.hoisted(() => vi.fn().mockResolvedValue({ success: true }));
 const mockRefreshConnectorTools = vi.hoisted(() => vi.fn());
+const mockProbeConnectorTools = vi.hoisted(() => vi.fn());
 
 const mockMCPClient = vi.hoisted(() => {
   const mockClient = {
@@ -67,6 +68,7 @@ vi.mock("../services/connector-refresh.js", () => ({
   connectorRefreshService: vi.fn(() => ({
     refreshConnectorTools: mockRefreshConnectorTools,
   })),
+  probeConnectorTools: mockProbeConnectorTools,
 }));
 
 vi.mock("../services/activity-log.js", () => ({
@@ -309,7 +311,7 @@ describe("connector routes", () => {
         { id: "c2", connectorKey: "microfish", connectorName: "MicroFish", status: "active" },
       ];
 
-      setupSelectSequence([enabledConnectors, allConnectors]);
+      setupSelectSequence([enabledConnectors, allConnectors, []]);
 
       const app = createApp({ companyIds: ["company1"] });
       const res = await request(app).get("/api/companies/company1/connectors");
@@ -322,6 +324,34 @@ describe("connector routes", () => {
       const microfish = res.body.find((c: any) => c.connectorKey === "microfish");
       expect(microfish).toBeDefined();
       expect(microfish.enabled).toBe(false);
+    });
+
+    it("includes per-tool registry rows (tools array) for enabled tenant connectors", async () => {
+      const enabledConnectors = [
+        { id: "tc1", tenantId: "company1", connectorId: "c1", status: "enabled" },
+      ];
+      const allConnectors = [
+        { id: "c1", connectorKey: "deerflow", connectorName: "DeerFlow", status: "active" },
+      ];
+      const registryRows = [
+        { id: "r1", tenantConnectorId: "tc1", toolName: "research", enabled: true, pending: false, namespacedName: "deerflow__research" },
+        { id: "r2", tenantConnectorId: "tc1", toolName: "send_message", enabled: false, pending: true, namespacedName: "deerflow__send_message" },
+      ];
+
+      setupSelectSequence([enabledConnectors, allConnectors, registryRows]);
+
+      const app = createApp({ companyIds: ["company1"] });
+      const res = await request(app).get("/api/companies/company1/connectors");
+
+      expect(res.status).toBe(200);
+      const deerflow = res.body.find((c: any) => c.connectorKey === "deerflow");
+      expect(deerflow.tools).toHaveLength(2);
+      const pending = deerflow.tools.filter((t: any) => t.pending);
+      expect(pending).toHaveLength(1);
+      expect(pending[0].toolName).toBe("send_message");
+      const approved = deerflow.tools.filter((t: any) => !t.pending);
+      expect(approved[0].toolName).toBe("research");
+      expect(approved[0].enabled).toBe(true);
     });
   });
 
@@ -368,14 +398,15 @@ describe("connector routes", () => {
       expect(res.status).toBe(400);
       expect(res.body.ok).toBe(false);
       expect(res.body.error).toContain("required");
+      expect(mockProbeConnectorTools).not.toHaveBeenCalled();
     });
 
-    it("returns tools on successful probe", async () => {
+    it("delegates to probeConnectorTools and returns tools on success", async () => {
       const fakeTools = [
-        { name: "get_weather", description: "Get weather data" },
-        { name: "send_email", description: "Send an email" },
+        { name: "get_weather", description: "Get weather data", inputSchema: {} },
+        { name: "send_email", description: "Send an email", inputSchema: {} },
       ];
-      mockMCPClient.__mockClient.listTools.mockResolvedValue({ tools: fakeTools });
+      mockProbeConnectorTools.mockResolvedValue({ ok: true, tools: fakeTools });
 
       const app = createApp();
       const res = await request(app)
@@ -385,10 +416,32 @@ describe("connector routes", () => {
       expect(res.status).toBe(200);
       expect(res.body.ok).toBe(true);
       expect(res.body.tools).toEqual(fakeTools);
+      expect(mockProbeConnectorTools).toHaveBeenCalledWith(
+        "http://localhost:9999/mcp",
+        expect.objectContaining({}),
+      );
     });
 
-    it("returns error on probe failure", async () => {
-      mockMCPClient.__mockClient.connect.mockRejectedValue(new Error("Connection refused"));
+    it("passes auth headers derived from authType + configuration", async () => {
+      mockProbeConnectorTools.mockResolvedValue({ ok: true, tools: [] });
+
+      const app = createApp();
+      await request(app)
+        .post("/api/connectors/test-endpoint")
+        .send({
+          endpointUrl: "http://localhost:9999/mcp",
+          authType: "bearer",
+          configuration: { token: "abc123" },
+        });
+
+      expect(mockProbeConnectorTools).toHaveBeenCalledWith(
+        "http://localhost:9999/mcp",
+        expect.objectContaining({ headers: { Authorization: "Bearer abc123" } }),
+      );
+    });
+
+    it("returns ok:false with an error when the probe fails", async () => {
+      mockProbeConnectorTools.mockResolvedValue({ ok: false, error: "Connection refused" });
 
       const app = createApp();
       const res = await request(app)
@@ -397,11 +450,11 @@ describe("connector routes", () => {
 
       expect(res.status).toBe(200);
       expect(res.body.ok).toBe(false);
-      expect(res.body.error).toBeTruthy();
+      expect(res.body.error).toBe("Connection refused");
     });
 
     it("does NOT write to database", async () => {
-      mockMCPClient.__mockClient.listTools.mockResolvedValue({ tools: [] });
+      mockProbeConnectorTools.mockResolvedValue({ ok: true, tools: [] });
 
       const app = createApp();
       await request(app)
@@ -457,7 +510,7 @@ describe("connector routes", () => {
         endpointUrl: "http://localhost:9999/mcp",
         capabilities: { tools: [{ name: "research" }, { name: "planner" }] },
       };
-      setupSelectSequence([[connector]]);
+      setupSelectSequence([[connector], []]);
 
       mockRefreshConnectorTools.mockResolvedValue({
         ok: true,
@@ -497,7 +550,7 @@ describe("connector routes", () => {
         endpointUrl: "http://localhost:9999/mcp",
         capabilities: null,
       };
-      setupSelectSequence([[connector]]);
+      setupSelectSequence([[connector], []]);
 
       mockRefreshConnectorTools.mockResolvedValue({
         ok: false,
@@ -510,6 +563,76 @@ describe("connector routes", () => {
       expect(res.status).toBe(200);
       expect(res.body.ok).toBe(false);
       expect(res.body.error).toBe("Connection refused");
+    });
+
+    it("inserts pending registry rows for added tools across enabled tenant connectors", async () => {
+      const connector = {
+        id: "c1",
+        connectorKey: "deerflow",
+        connectorName: "DeerFlow",
+        endpointUrl: "http://localhost:9999/mcp",
+        capabilities: { tools: [{ name: "research" }] },
+      };
+      const tenantConnectorsRows = [
+        { id: "tc1", tenantId: "t1", connectorId: "c1", namespace: "deerflow", status: "enabled" },
+        { id: "tc2", tenantId: "t2", connectorId: "c1", namespace: "deerflow", status: "enabled" },
+      ];
+      setupSelectSequence([[connector], tenantConnectorsRows]);
+
+      mockRefreshConnectorTools.mockResolvedValue({
+        ok: true,
+        tools: [
+          { name: "research", description: "Research" },
+          { name: "send_message", description: "Send" },
+        ],
+      });
+
+      const insertChain = setupInsert([]);
+
+      const app = createApp();
+      const res = await request(app).post("/api/connectors/c1/sync");
+
+      expect(res.status).toBe(200);
+      expect(res.body.added).toEqual(["send_message"]);
+      expect(mockDb.insert).toHaveBeenCalled();
+      const valuesArg = insertChain.values.mock.calls[0][0];
+      expect(Array.isArray(valuesArg)).toBe(true);
+      expect(valuesArg).toHaveLength(2);
+      const tc1Row = valuesArg.find((v: any) => v.tenantConnectorId === "tc1");
+      expect(tc1Row).toBeDefined();
+      expect(tc1Row.toolName).toBe("send_message");
+      expect(tc1Row.namespacedName).toBe("deerflow__send_message");
+      expect(tc1Row.pending).toBe(true);
+      expect(tc1Row.enabled).toBe(true);
+      const tc2Row = valuesArg.find((v: any) => v.tenantConnectorId === "tc2");
+      expect(tc2Row).toBeDefined();
+      expect(tc2Row.pending).toBe(true);
+    });
+
+    it("does not insert registry rows when no tenant connectors are enabled", async () => {
+      const connector = {
+        id: "c1",
+        connectorKey: "deerflow",
+        connectorName: "DeerFlow",
+        endpointUrl: "http://localhost:9999/mcp",
+        capabilities: { tools: [{ name: "research" }] },
+      };
+      setupSelectSequence([[connector], []]);
+
+      mockRefreshConnectorTools.mockResolvedValue({
+        ok: true,
+        tools: [
+          { name: "research", description: "Research" },
+          { name: "send_message", description: "Send" },
+        ],
+      });
+
+      const app = createApp();
+      const res = await request(app).post("/api/connectors/c1/sync");
+
+      expect(res.status).toBe(200);
+      expect(res.body.added).toEqual(["send_message"]);
+      expect(mockDb.insert).not.toHaveBeenCalled();
     });
   });
 
