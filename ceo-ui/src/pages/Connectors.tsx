@@ -10,7 +10,7 @@ import {
   AlertCircle,
   RefreshCw,
 } from "lucide-react";
-import { connectorsApi, type Connector, type TestEndpointResult, type SyncResult } from "../api/connectors";
+import { connectorsApi, type Connector, type TestEndpointResult, type SyncResult, type ConnectorTool } from "../api/connectors";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
@@ -40,6 +40,13 @@ function ConnectorFormDialog({
   const formRef = useRef<HTMLFormElement>(null);
   const [testState, setTestState] = useState<TestState>("idle");
   const [testResult, setTestResult] = useState<TestEndpointResult | null>(null);
+
+  const syncMutation = useMutation({
+    mutationFn: (id: string) => connectorsApi.sync(id),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["connectors"] });
+    },
+  });
 
   const createMutation = useMutation({
     mutationFn: (data: Record<string, unknown>) => connectorsApi.create(data),
@@ -249,6 +256,49 @@ function ConnectorFormDialog({
               placeholder='{ "apiKey": "...", "headerName": "X-API-Key" }'
             />
           </div>
+          {editing && Boolean(editing.capabilities?.tools) && Array.isArray(editing.capabilities?.tools) && (editing.capabilities?.tools as ConnectorTool[]).length > 0 && (
+            <div className="rounded-md border border-border/60 p-2">
+              <div className="mb-1 flex items-center justify-between">
+                <span className="text-xs font-medium">
+                  Probed tools ({(editing.capabilities.tools as ConnectorTool[]).length})
+                </span>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  disabled={syncMutation.isPending}
+                  onClick={async () => {
+                    const res = await connectorsApi.sync(editing.id);
+                    queryClient.invalidateQueries({ queryKey: ["connectors"] });
+                    if (res.ok) {
+                      setTestResult({ ok: true, tools: res.tools ?? [] });
+                      setTestState("done");
+                    } else {
+                      setTestResult({ ok: false, error: res.error ?? "sync failed" });
+                      setTestState("done");
+                    }
+                  }}
+                >
+                  {syncMutation.isPending ? (
+                    <Loader2 className="h-3.5 w-3.5 animate-spin mr-1" />
+                  ) : (
+                    <RefreshCw className="h-3.5 w-3.5 mr-1" />
+                  )}
+                  Re-sync
+                </Button>
+              </div>
+              <div className="max-h-32 space-y-0.5 overflow-y-auto">
+                {(editing.capabilities.tools as ConnectorTool[]).map((tool) => (
+                  <div key={tool.name} className="font-mono text-[10px]">
+                    {tool.name}
+                    {tool.description ? (
+                      <span className="text-muted-foreground ml-1">— {tool.description}</span>
+                    ) : null}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
           {createMutation.isError && (
             <p className="text-xs text-destructive flex items-center gap-1">
               <AlertCircle className="h-3 w-3" />

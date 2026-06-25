@@ -32,6 +32,11 @@ export interface TestEndpointResult {
   error?: string;
 }
 
+export interface ConnectorTool {
+  name: string;
+  description?: string;
+}
+
 export const connectorsApi = {
   list: () => api.get<Connector[]>("/admin/connectors"),
   get: (id: string) => api.get<Connector>(`/admin/connectors/${id}`),
@@ -46,4 +51,14 @@ export const connectorsApi = {
     configuration: Record<string, unknown> | null;
   }) => api.post<TestEndpointResult>("/admin/connectors/test-endpoint", params),
   sync: (id: string) => api.post<SyncResult>(`/admin/connectors/${id}/sync`, {}),
+  setToolEnabled: (
+    tenantId: string,
+    connectorId: string,
+    toolId: string,
+    enabled: boolean,
+  ) =>
+    api.patch<{ ok: boolean; tool: { id: string; enabled: boolean } }>(
+      `/admin/tenants/${tenantId}/connectors/${connectorId}/tools/${toolId}`,
+      { enabled },
+    ),
 };
