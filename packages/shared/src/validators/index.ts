@@ -451,10 +451,12 @@ export {
   updateConnectorSchema,
   enableConnectorSchema,
   updateTenantConnectorSchema,
+  setToolEnabledSchema,
   type CreateConnector,
   type UpdateConnector,
   type EnableConnector,
   type UpdateTenantConnector,
+  type SetToolEnabled,
 } from "./connector.js";
 
 export {

@@ -42,3 +42,8 @@ export const updateTenantConnectorSchema = z.object({
   namespace: z.string().min(1).max(100).regex(/^[a-z0-9_-]+$/).optional(),
 }).strict();
 export type UpdateTenantConnector = z.infer<typeof updateTenantConnectorSchema>;
+
+export const setToolEnabledSchema = z.object({
+  enabled: z.boolean(),
+}).strict();
+export type SetToolEnabled = z.infer<typeof setToolEnabledSchema>;

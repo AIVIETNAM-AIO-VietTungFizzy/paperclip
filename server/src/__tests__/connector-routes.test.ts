@@ -17,6 +17,7 @@ const mockLogActivity = vi.hoisted(() => vi.fn());
 
 const mockCanEnableConnector = vi.hoisted(() => vi.fn().mockResolvedValue({ allowed: true }));
 const mockHandshake = vi.hoisted(() => vi.fn().mockResolvedValue({ success: true }));
+const mockRefreshConnectorTools = vi.hoisted(() => vi.fn());
 
 const mockMCPClient = vi.hoisted(() => {
   const mockClient = {
@@ -59,6 +60,12 @@ vi.mock("../services/connector-entitlement.js", () => ({
 vi.mock("../services/connector-handshake.js", () => ({
   connectorHandshakeService: vi.fn(() => ({
     handshake: mockHandshake,
+  })),
+}));
+
+vi.mock("../services/connector-refresh.js", () => ({
+  connectorRefreshService: vi.fn(() => ({
+    refreshConnectorTools: mockRefreshConnectorTools,
   })),
 }));
 
@@ -430,6 +437,131 @@ describe("connector routes", () => {
         .post("/api/companies/company1/connectors/unknown/disable");
 
       expect(res.status).toBe(404);
+    });
+  });
+
+  describe("POST /api/connectors/:id/sync", () => {
+    it("returns 403 for non-board actors", async () => {
+      const app = createApp({ type: "user", isInstanceAdmin: false });
+      const res = await request(app).post("/api/connectors/c1/sync");
+
+      expect(res.status).toBe(403);
+      expect(mockRefreshConnectorTools).not.toHaveBeenCalled();
+    });
+
+    it("re-syncs a connector and returns added/removed/tools", async () => {
+      const connector = {
+        id: "c1",
+        connectorKey: "deerflow",
+        connectorName: "DeerFlow",
+        endpointUrl: "http://localhost:9999/mcp",
+        capabilities: { tools: [{ name: "research" }, { name: "planner" }] },
+      };
+      setupSelectSequence([[connector]]);
+
+      mockRefreshConnectorTools.mockResolvedValue({
+        ok: true,
+        tools: [
+          { name: "research", description: "Research" },
+          { name: "send_message", description: "Send" },
+        ],
+      });
+
+      const app = createApp();
+      const res = await request(app).post("/api/connectors/c1/sync");
+
+      expect(res.status).toBe(200);
+      expect(res.body.ok).toBe(true);
+      expect(res.body.added).toEqual(["send_message"]);
+      expect(res.body.removed).toEqual(["planner"]);
+      expect(res.body.tools).toHaveLength(2);
+      expect(mockRefreshConnectorTools).toHaveBeenCalledWith("c1");
+      expect(mockLogActivity).toHaveBeenCalled();
+    });
+
+    it("returns 404 when the connector is not found", async () => {
+      setupSelectSequence([[]]);
+
+      const app = createApp();
+      const res = await request(app).post("/api/connectors/missing/sync");
+
+      expect(res.status).toBe(404);
+      expect(mockRefreshConnectorTools).not.toHaveBeenCalled();
+    });
+
+    it("returns ok:false when the probe fails", async () => {
+      const connector = {
+        id: "c1",
+        connectorKey: "deerflow",
+        connectorName: "DeerFlow",
+        endpointUrl: "http://localhost:9999/mcp",
+        capabilities: null,
+      };
+      setupSelectSequence([[connector]]);
+
+      mockRefreshConnectorTools.mockResolvedValue({
+        ok: false,
+        error: "Connection refused",
+      });
+
+      const app = createApp();
+      const res = await request(app).post("/api/connectors/c1/sync");
+
+      expect(res.status).toBe(200);
+      expect(res.body.ok).toBe(false);
+      expect(res.body.error).toBe("Connection refused");
+    });
+  });
+
+  describe("PATCH /api/companies/:companyId/connectors/:connectorId/tools/:toolId", () => {
+    it("sets enabled on a connector tool registry row and returns 200", async () => {
+      const tcRow = { id: "tc1", tenantId: "company1", connectorId: "c1" };
+      const toolRow = { id: "tool1", tenantConnectorId: "tc1", toolName: "research", enabled: false };
+      const updatedTool = { ...toolRow, enabled: true };
+
+      setupSelectSequence([[tcRow], [toolRow]]);
+      setupUpdate([updatedTool]);
+
+      const app = createApp({ companyIds: ["company1"] });
+      const res = await request(app)
+        .patch("/api/companies/company1/connectors/c1/tools/research")
+        .send({ enabled: true });
+
+      expect(res.status).toBe(200);
+      expect(res.body.ok).toBe(true);
+      expect(res.body.tool.enabled).toBe(true);
+    });
+
+    it("returns 404 when the tenant connector is not found", async () => {
+      setupSelectSequence([[]]);
+
+      const app = createApp({ companyIds: ["company1"] });
+      const res = await request(app)
+        .patch("/api/companies/company1/connectors/c1/tools/research")
+        .send({ enabled: true });
+
+      expect(res.status).toBe(404);
+    });
+
+    it("returns 404 when the tool is not in the registry", async () => {
+      const tcRow = { id: "tc1", tenantId: "company1", connectorId: "c1" };
+      setupSelectSequence([[tcRow], []]);
+
+      const app = createApp({ companyIds: ["company1"] });
+      const res = await request(app)
+        .patch("/api/companies/company1/connectors/c1/tools/unknown")
+        .send({ enabled: true });
+
+      expect(res.status).toBe(404);
+    });
+
+    it("rejects invalid body (missing enabled)", async () => {
+      const app = createApp({ companyIds: ["company1"] });
+      const res = await request(app)
+        .patch("/api/companies/company1/connectors/c1/tools/research")
+        .send({});
+
+      expect(res.status).toBe(400);
     });
   });
 });

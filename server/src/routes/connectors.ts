@@ -8,12 +8,14 @@ import { assertBoard, assertCompanyAccess } from "./authz.js";
 import { logActivity } from "../services/activity-log.js";
 import { connectorEntitlementService } from "../services/connector-entitlement.js";
 import { connectorHandshakeService } from "../services/connector-handshake.js";
-import { createConnectorSchema, updateConnectorSchema, enableConnectorSchema, updateTenantConnectorSchema } from "@paperclipai/shared";
+import { connectorRefreshService } from "../services/connector-refresh.js";
+import { createConnectorSchema, updateConnectorSchema, enableConnectorSchema, updateTenantConnectorSchema, setToolEnabledSchema } from "@paperclipai/shared";
 
 export function connectorRoutes(db: Db) {
   const router = Router();
   const entitlement = connectorEntitlementService(db);
   const handshake = connectorHandshakeService(db);
+  const refresh = connectorRefreshService(db);
 
   router.get("/connectors", async (_req, res) => {
     const all = await db.select().from(connectorsTable).orderBy(connectorsTable.connectorName);
@@ -347,6 +349,113 @@ export function connectorRoutes(db: Db) {
 
     res.json({ status: "disabled" });
   });
+
+  router.post("/connectors/:id/sync", async (req, res) => {
+    assertBoard(req);
+    const id = req.params.id as string;
+
+    const connector = await db
+      .select()
+      .from(connectorsTable)
+      .where(eq(connectorsTable.id, id))
+      .limit(1)
+      .then((r) => r[0]);
+
+    if (!connector) { res.status(404).json({ ok: false, error: "connector_not_found" }); return; }
+
+    const priorCapabilities = (connector.capabilities ?? {}) as Record<string, unknown>;
+    const priorTools = Array.isArray(priorCapabilities.tools) ? (priorCapabilities.tools as Array<{ name: string }>) : [];
+    const priorNames = new Set(priorTools.map((t) => t.name));
+
+    const result = await refresh.refreshConnectorTools(id);
+
+    if (!result.ok) {
+      res.json({ ok: false, error: result.error });
+      return;
+    }
+
+    const tools = result.tools ?? [];
+    const newNames = new Set(tools.map((t) => t.name));
+    const added = tools.filter((t) => !priorNames.has(t.name)).map((t) => t.name);
+    const removed = [...priorNames].filter((n) => !newNames.has(n));
+
+    const capabilities = { ...(priorCapabilities as Record<string, unknown>), tools: tools.map((t) => ({ name: t.name, description: t.description })) };
+    await db
+      .update(connectorsTable)
+      .set({ capabilities, updatedAt: new Date() })
+      .where(eq(connectorsTable.id, id));
+
+    await logActivity(db, {
+      companyId: "system",
+      actorType: "user",
+      actorId: req.actor.userId ?? "board",
+      action: "connector.synced",
+      entityType: "connector",
+      entityId: id,
+      details: { added, removed, toolCount: tools.length },
+    });
+
+    res.json({ ok: true, added, removed, tools });
+  });
+
+  router.patch(
+    "/companies/:companyId/connectors/:connectorId/tools/:toolId",
+    validate(setToolEnabledSchema),
+    async (req, res) => {
+      assertBoard(req);
+      const companyId = req.params.companyId as string;
+      const connectorId = req.params.connectorId as string;
+      const toolId = req.params.toolId as string;
+      assertCompanyAccess(req, companyId);
+      const { enabled } = req.body as { enabled: boolean };
+
+      const tcRow = await db
+        .select({ id: tenantConnectors.id })
+        .from(tenantConnectors)
+        .where(
+          and(
+            eq(tenantConnectors.tenantId, companyId),
+            eq(tenantConnectors.connectorId, connectorId),
+          ),
+        )
+        .limit(1)
+        .then((r) => r[0]);
+
+      if (!tcRow) { res.status(404).json({ error: "tenant_connector_not_found" }); return; }
+
+      const toolRow = await db
+        .select()
+        .from(connectorToolRegistry)
+        .where(
+          and(
+            eq(connectorToolRegistry.tenantConnectorId, tcRow.id),
+            eq(connectorToolRegistry.toolName, toolId),
+          ),
+        )
+        .limit(1)
+        .then((r) => r[0]);
+
+      if (!toolRow) { res.status(404).json({ error: "tool_not_found" }); return; }
+
+      const updated = await db
+        .update(connectorToolRegistry)
+        .set({ enabled })
+        .where(eq(connectorToolRegistry.id, toolRow.id))
+        .returning();
+
+      await logActivity(db, {
+        companyId,
+        actorType: "user",
+        actorId: req.actor.userId ?? "board",
+        action: "connector.tool_enabled_toggled",
+        entityType: "connector_tool",
+        entityId: toolRow.id,
+        details: { connectorId, toolId, enabled },
+      });
+
+      res.json({ ok: true, tool: updated[0] });
+    },
+  );
 
   return router;
 }
