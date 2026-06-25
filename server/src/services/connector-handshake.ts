@@ -4,6 +4,8 @@ import { eq, and } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { tenantConnectors, connectorToolRegistry } from "@paperclipai/db";
 
+const HANDSHAKE_TIMEOUT_MS = 15_000;
+
 export function connectorHandshakeService(db: Db) {
   return {
     handshake: async (
@@ -14,6 +16,8 @@ export function connectorHandshakeService(db: Db) {
       credentialHeaders?: Record<string, string>,
     ): Promise<{ success: boolean; error?: string }> => {
       let client: Client | null = null;
+      const abortController = new AbortController();
+      const handshakeTimer = setTimeout(() => abortController.abort(), HANDSHAKE_TIMEOUT_MS);
       try {
         const { StreamableHTTPClientTransport } = await import(
           "@modelcontextprotocol/sdk/client/streamableHttp.js"
@@ -21,7 +25,12 @@ export function connectorHandshakeService(db: Db) {
 
         const transport = new StreamableHTTPClientTransport(
           new URL(endpointUrl),
-          credentialHeaders ? { requestInit: { headers: credentialHeaders } } : undefined,
+          {
+            requestInit: {
+              signal: abortController.signal,
+              ...(credentialHeaders ? { headers: credentialHeaders } : {}),
+            },
+          },
         );
 
         client = new Client(
@@ -34,6 +43,7 @@ export function connectorHandshakeService(db: Db) {
         const result = await client.request(
           { method: "tools/list", params: {} },
           z.object({}).passthrough(),
+          { signal: abortController.signal },
         );
 
         const tools = ((result as Record<string, unknown>).tools as Array<Record<string, unknown>>) ?? [];
@@ -98,6 +108,7 @@ export function connectorHandshakeService(db: Db) {
           );
         return { success: false, error: errorMessage };
       } finally {
+        clearTimeout(handshakeTimer);
         if (client) {
           try { await client.close(); } catch { /* ignore close errors */ }
         }

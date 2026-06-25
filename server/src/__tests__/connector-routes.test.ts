@@ -432,4 +432,94 @@ describe("connector routes", () => {
       expect(res.status).toBe(404);
     });
   });
+
+  describe("GET /api/companies/:companyId/connectors/:connectorId/tools", () => {
+    it("returns tools for a tenant connector", async () => {
+      const tc = { id: "tc1", tenantId: "company1", connectorId: "c1" };
+      const tools = [
+        { id: "t1", toolName: "get_weather", namespacedName: "deerflow__get_weather", description: "Get weather", enabled: true, pending: false, riskClass: null, approvalClass: null, requiresApproval: false },
+        { id: "t2", toolName: "send_email", namespacedName: "deerflow__send_email", description: "Send email", enabled: false, pending: false, riskClass: null, approvalClass: null, requiresApproval: false },
+      ];
+
+      setupSelectSequence([[tc], tools]);
+
+      const app = createApp({ companyIds: ["company1"] });
+      const res = await request(app).get("/api/companies/company1/connectors/c1/tools");
+
+      expect(res.status).toBe(200);
+      expect(res.body).toEqual(tools);
+      expect(res.body).toHaveLength(2);
+    });
+
+    it("returns 404 when tenant connector not found", async () => {
+      setupSelectSequence([[]]);
+
+      const app = createApp({ companyIds: ["company1"] });
+      const res = await request(app).get("/api/companies/company1/connectors/unknown/tools");
+
+      expect(res.status).toBe(404);
+      expect(res.body.error).toBe("tenant_connector_not_found");
+    });
+  });
+
+  describe("POST /api/companies/:companyId/connectors/:connectorId/tools/:toolId/toggle", () => {
+    it("toggles a tool's enabled status", async () => {
+      const tc = { id: "tc1", tenantId: "company1", connectorId: "c1" };
+      const existingTool = { id: "t1", toolName: "get_weather", namespacedName: "deerflow__get_weather", enabled: true };
+      const updatedTool = { id: "t1", toolName: "get_weather", namespacedName: "deerflow__get_weather", enabled: false };
+
+      const updateChain: any = {
+        set: vi.fn().mockReturnThis(),
+        where: vi.fn().mockReturnThis(),
+        returning: vi.fn().mockResolvedValue([updatedTool]),
+      };
+
+      setupSelectSequence([[tc], [existingTool]]);
+      mockDb.update.mockReturnValue(updateChain);
+
+      const app = createApp({ companyIds: ["company1"] });
+      const res = await request(app)
+        .post("/api/companies/company1/connectors/c1/tools/t1/toggle")
+        .send({ enabled: false });
+
+      expect(res.status).toBe(200);
+      expect(res.body).toEqual(updatedTool);
+      expect(res.body.enabled).toBe(false);
+      expect(mockLogActivity).toHaveBeenCalled();
+    });
+
+    it("returns 404 when tool not found", async () => {
+      const tc = { id: "tc1", tenantId: "company1", connectorId: "c1" };
+      setupSelectSequence([[tc], []]);
+
+      const app = createApp({ companyIds: ["company1"] });
+      const res = await request(app)
+        .post("/api/companies/company1/connectors/c1/tools/unknown/toggle")
+        .send({ enabled: true });
+
+      expect(res.status).toBe(404);
+      expect(res.body.error).toBe("tool_not_found");
+    });
+
+    it("returns 404 when tenant connector not found", async () => {
+      setupSelectSequence([[]]);
+
+      const app = createApp({ companyIds: ["company1"] });
+      const res = await request(app)
+        .post("/api/companies/company1/connectors/unknown/tools/t1/toggle")
+        .send({ enabled: true });
+
+      expect(res.status).toBe(404);
+      expect(res.body.error).toBe("tenant_connector_not_found");
+    });
+
+    it("rejects invalid body", async () => {
+      const app = createApp({ companyIds: ["company1"] });
+      const res = await request(app)
+        .post("/api/companies/company1/connectors/c1/tools/t1/toggle")
+        .send({ foo: "bar" });
+
+      expect(res.status).toBe(400);
+    });
+  });
 });

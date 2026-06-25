@@ -92,6 +92,7 @@ describe("connector-gateway allowlist + enforce", () => {
 
     const res = await request(app)
       .post("/connector/tools/list")
+      .set("X-Service-Token", "test-token")
       .send({ tenant_id: "tenant-1" });
 
     expect(res.status).toBe(200);
@@ -132,6 +133,7 @@ describe("connector-gateway allowlist + enforce", () => {
 
     const res = await request(app)
       .post("/connector/tools/list")
+      .set("X-Service-Token", "test-token")
       .send({ tenant_id: "tenant-1" });
 
     expect(res.status).toBe(200);
@@ -159,6 +161,7 @@ describe("connector-gateway allowlist + enforce", () => {
 
     const res = await request(app)
       .post("/connector/tools/call")
+      .set("X-Service-Token", "test-token")
       .send({
         tenant_id: "tenant-1",
         name: "gmail__delete_email",
@@ -197,6 +200,7 @@ describe("connector-gateway allowlist + enforce", () => {
 
     const res = await request(app)
       .post("/connector/tools/call")
+      .set("X-Service-Token", "test-token")
       .send({
         tenant_id: "tenant-1",
         name: "gmail__send_email",
@@ -230,6 +234,7 @@ describe("connector-gateway allowlist + enforce", () => {
 
     const res = await request(app)
       .post("/connector/tools/call")
+      .set("X-Service-Token", "test-token")
       .send({
         tenant_id: "tenant-1",
         name: "gmail__send_email",
@@ -266,6 +271,7 @@ describe("connector-gateway allowlist + enforce", () => {
 
     const res = await request(app)
       .post("/connector/tools/call")
+      .set("X-Service-Token", "test-token")
       .send({
         tenant_id: "tenant-1",
         name: "gmail__send_email",
@@ -303,6 +309,7 @@ describe("connector-gateway allowlist + enforce", () => {
 
     const res = await request(app)
       .post("/connector/tools/call")
+      .set("X-Service-Token", "test-token")
       .send({
         tenant_id: "tenant-1",
         name: "gmail__send_email",
@@ -368,6 +375,7 @@ describe("connector-gateway allowlist + enforce", () => {
 
     const res = await request(app)
       .post("/connector/tools/call")
+      .set("X-Service-Token", "test-token")
       .send({
         tenant_id: "tenant-1",
         name: "gmail__send_email",
@@ -378,5 +386,193 @@ describe("connector-gateway allowlist + enforce", () => {
     expect(res.body.isError).toBe(true);
     expect(clientRequestMock).not.toHaveBeenCalled();
     expect(warnSpy).toHaveBeenCalled();
+  });
+
+  // C1 regression: enforce returns HTTP 200 with a well-formed JSON body that
+  // lacks a `decision` field entirely (e.g. `200 {}`). The gateway must NOT
+  // fall through to dispatch — only an explicit `decision === "allow"` with
+  // no `requires_approval` may dispatch. Every other case → 403.
+  it("fails closed when enforce returns 200 with no decision field", async () => {
+    const request = (await import("supertest")).default;
+
+    mockFetch({
+      "connector-by-namespace/gmail": {
+        ok: true,
+        json: {
+          connectorKey: "gmail",
+          resolvedEndpoint: "http://gmail:3001",
+          packageTier: "free",
+          enabledTools: ["gmail__send_email"],
+        },
+      },
+      "api/core/enforce": {
+        ok: true,
+        json: {},
+      },
+    });
+
+    app = await createGatewayApp();
+
+    const res = await request(app)
+      .post("/connector/tools/call")
+      .set("X-Service-Token", "test-token")
+      .send({
+        tenant_id: "tenant-1",
+        name: "gmail__send_email",
+        arguments: {},
+      });
+
+    expect(res.status).toBe(403);
+    expect(res.body.isError).toBe(true);
+    expect(clientRequestMock).not.toHaveBeenCalled();
+  });
+
+  // C1 regression: enforce returns HTTP 200 with an unknown `decision` string
+  // (e.g. "allow_with_caveats"). The gateway must reject it — only the exact
+  // value "allow" (and no requires_approval) may dispatch.
+  it("fails closed when enforce returns 200 with unknown decision value", async () => {
+    const request = (await import("supertest")).default;
+
+    mockFetch({
+      "connector-by-namespace/gmail": {
+        ok: true,
+        json: {
+          connectorKey: "gmail",
+          resolvedEndpoint: "http://gmail:3001",
+          packageTier: "free",
+          enabledTools: ["gmail__send_email"],
+        },
+      },
+      "api/core/enforce": {
+        ok: true,
+        json: { decision: "allow_with_caveats" },
+      },
+    });
+
+    app = await createGatewayApp();
+
+    const res = await request(app)
+      .post("/connector/tools/call")
+      .send({
+        tenant_id: "tenant-1",
+        name: "gmail__send_email",
+        arguments: {},
+      });
+
+    expect(res.status).toBe(403);
+    expect(res.body.isError).toBe(true);
+    expect(clientRequestMock).not.toHaveBeenCalled();
+  });
+
+  // I1 regression: the gateway must not trust a caller-supplied tenant_id
+  // without authentication. Any request without a valid service token must
+  // be rejected before reaching the CP or any connector.
+  it("rejects unauthenticated /tools/call (no service token)", async () => {
+    const request = (await import("supertest")).default;
+
+    app = await createGatewayApp();
+
+    const res = await request(app)
+      .post("/connector/tools/call")
+      .send({
+        tenant_id: "tenant-1",
+        name: "gmail__send_email",
+        arguments: {},
+      });
+
+    expect(res.status).toBe(401);
+    expect(res.body.error).toContain("service_token");
+    expect(clientRequestMock).not.toHaveBeenCalled();
+  });
+
+  // I1 regression: spoofed x-tenant-id header with a valid service token
+  // still works, but a valid service token with NO tenant_id in body or
+  // header must be rejected (400), not silently trusted.
+  it("rejects /tools/call with valid token but no tenant_id", async () => {
+    const request = (await import("supertest")).default;
+
+    app = await createGatewayApp();
+
+    const res = await request(app)
+      .post("/connector/tools/call")
+      .set("X-Service-Token", "test-token")
+      .send({
+        name: "gmail__send_email",
+        arguments: {},
+      });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toContain("tenant_id");
+  });
+
+  // I3 regression: when packageTier is "denied", the gateway must hard-403
+  // before calling enforce. Previously the gateway proceeded to enforce,
+  // which returned allow for any enabled+non-pending tool, creating a
+  // window where a denied-package tenant could still call tools.
+  it("hard-403 when packageTier is denied, before calling enforce", async () => {
+    const request = (await import("supertest")).default;
+
+    mockFetch({
+      "connector-by-namespace/gmail": {
+        ok: true,
+        json: {
+          connectorKey: "gmail",
+          resolvedEndpoint: "http://gmail:3001",
+          packageTier: "denied",
+          enabledTools: ["gmail__send_email"],
+        },
+      },
+    });
+
+    app = await createGatewayApp();
+
+    const res = await request(app)
+      .post("/connector/tools/call")
+      .set("X-Service-Token", "test-token")
+      .send({
+        tenant_id: "tenant-1",
+        name: "gmail__send_email",
+        arguments: {},
+      });
+
+    expect(res.status).toBe(403);
+    expect(res.body.isError).toBe(true);
+    expect(res.body.content[0].text).toContain("package");
+    // enforce must not have been called
+    const fetchCalls = globalThis.fetch.mock.calls.map((c) => String(c[0]));
+    expect(fetchCalls.some((u) => u.includes("api/core/enforce"))).toBe(false);
+    expect(clientRequestMock).not.toHaveBeenCalled();
+  });
+
+  // I4 regression: the gateway must not leak internal error details (stack
+  // traces, connector endpoint URLs, raw error strings) to the caller. The
+  // outer catch must return a static message, logging detail server-side.
+  it("does not leak internal error details in 500 response", async () => {
+    const request = (await import("supertest")).default;
+
+    // Force the enabled-connectors fetch to throw a connector-URL-bearing
+    // error so the outer catch path is exercised.
+    globalThis.fetch = vi.fn().mockImplementation(async () => {
+      throw new Error("ECONNREFUSED http://internal-connector:3001/mcp secret_token=abc123");
+    });
+
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    app = await createGatewayApp();
+
+    const res = await request(app)
+      .post("/connector/tools/list")
+      .set("X-Service-Token", "test-token")
+      .send({ tenant_id: "tenant-1" });
+
+    expect(res.status).toBe(500);
+    expect(res.body.error).toBe("gateway_error");
+    // The response message must NOT contain the internal URL or secret.
+    const bodyStr = JSON.stringify(res.body);
+    expect(bodyStr).not.toContain("internal-connector");
+    expect(bodyStr).not.toContain("secret_token");
+    expect(bodyStr).not.toContain("ECONNREFUSED");
+    // But the detail IS logged server-side.
+    expect(errorSpy).toHaveBeenCalled();
   });
 });

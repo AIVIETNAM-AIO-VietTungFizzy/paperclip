@@ -147,7 +147,12 @@ describe("connectorHandshakeService", () => {
 
     expect(mockStreamableHTTPClientTransport).toHaveBeenCalledWith(
       new URL("http://example.com/mcp"),
-      { requestInit: { headers: { Authorization: "Bearer token-123" } } },
+      expect.objectContaining({
+        requestInit: expect.objectContaining({
+          headers: { Authorization: "Bearer token-123" },
+          signal: expect.any(AbortSignal),
+        }),
+      }),
     );
   });
 
@@ -258,8 +263,11 @@ describe("connectorHandshakeService", () => {
     expect(insertedValues.tenantConnectorId).toBe("tc-1");
     expect(insertedValues.toolName).toBe("send_email");
     expect(insertedValues.namespacedName).toBe("gmail__send_email");
-    expect(insertedValues.enabled).toBe(true);
-    expect(insertedValues.pending).toBe(false);
+    // C3: newly discovered tools must be pending and disabled until an admin
+    // reviews them. The discover-then-govern workflow requires that a brand-
+    // new tool is NOT immediately dispatchable through enforce.
+    expect(insertedValues.enabled).toBe(false);
+    expect(insertedValues.pending).toBe(true);
     expect(insertedValues.riskClass).toBe("connector");
     expect(insertedValues.approvalClass).toBe("auto");
     expect(insertedValues.requiresApproval).toBe(false);

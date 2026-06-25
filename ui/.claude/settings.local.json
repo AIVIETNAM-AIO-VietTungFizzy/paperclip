@@ -1,0 +1,7 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python3 -c \"import json,sys; d=json.load\\(sys.stdin\\); [print\\(k,':',v\\) for k,v in sorted\\({**d.get\\('dependencies',{}\\), **d.get\\('devDependencies',{}\\)}.items\\(\\)\\)]\")"
+    ]
+  }
+}

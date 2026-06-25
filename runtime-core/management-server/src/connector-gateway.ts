@@ -1,3 +1,4 @@
+import { timingSafeEqual } from "node:crypto";
 import { Router } from "express";
 import { z } from "zod";
 import { ConnectorClientPool } from "../modules/runtime/connector-client-pool.js";
@@ -6,6 +7,7 @@ const AnyResult = z.object({}).passthrough();
 
 const CP_BASE_URL = process.env.CP_URL || "http://localhost:3001";
 const CP_SERVICE_TOKEN = process.env.CP_SERVICE_TOKEN || "";
+const GATEWAY_SERVICE_TOKEN = process.env.GATEWAY_SERVICE_TOKEN || CP_SERVICE_TOKEN;
 const CONNECTOR_TIMEOUT_MS = 30_000;
 
 interface ToolDefinition {
@@ -16,11 +18,60 @@ interface ToolDefinition {
 
 const clientPool = new ConnectorClientPool({ timeoutMs: CONNECTOR_TIMEOUT_MS });
 
+/**
+ * I1: Authenticate the caller before trusting tenant_id. The gateway is
+ * reachable by any party that can hit the runtime-core port, so a bare
+ * `req.body.tenant_id` is an impersonation vector. We require a service
+ * token (GATEWAY_SERVICE_TOKEN, falling back to CP_SERVICE_TOKEN) verified
+ * with timingSafeEqual.
+ */
+function requireGatewayAuth(req: import("express").Request): void {
+  const expectedToken = GATEWAY_SERVICE_TOKEN;
+  if (!expectedToken) {
+    throw Object.assign(new Error("gateway_service_token_required"), { status: 401 });
+  }
+
+  const authHeader = req.header("authorization");
+  const serviceToken = req.header("x-service-token");
+  const rawToken = authHeader?.toLowerCase().startsWith("bearer ")
+    ? authHeader.slice("bearer ".length).trim()
+    : serviceToken?.trim();
+
+  if (!rawToken) {
+    throw Object.assign(new Error("gateway_service_token_required"), { status: 401 });
+  }
+
+  const expected = Buffer.from(expectedToken);
+  const provided = Buffer.from(rawToken);
+
+  if (expected.length !== provided.length) {
+    throw Object.assign(new Error("gateway_service_token_required"), { status: 401 });
+  }
+
+  if (!timingSafeEqual(expected, provided)) {
+    throw Object.assign(new Error("gateway_service_token_required"), { status: 401 });
+  }
+}
+
+/** I4: log full detail server-side, return only a static message to the caller. */
+function failGateway(res: import("express").Response, err: unknown): void {
+  console.error("[connector-gateway] internal error:", err instanceof Error ? err.message : String(err));
+  res.status(500).json({ error: "gateway_error" });
+}
+
 export function createConnectorGateway(): Router {
   const router = Router();
 
   router.post("/tools/list", async (req, res) => {
     try {
+      try {
+        requireGatewayAuth(req);
+      } catch (err: unknown) {
+        const error = err as { status?: number; message?: string };
+        res.status(error.status ?? 401).json({ error: error.message ?? "gateway_service_token_required" });
+        return;
+      }
+
       const tenantId = req.body.tenant_id || req.headers["x-tenant-id"];
       if (!tenantId) { res.status(400).json({ error: "tenant_id_required" }); return; }
 
@@ -79,12 +130,20 @@ export function createConnectorGateway(): Router {
         tools: [...(cpTools.tools ?? []), ...connectorTools],
       });
     } catch (err) {
-      res.status(500).json({ error: "gateway_error", message: String(err) });
+      failGateway(res, err);
     }
   });
 
   router.post("/tools/call", async (req, res) => {
     try {
+      try {
+        requireGatewayAuth(req);
+      } catch (err: unknown) {
+        const error = err as { status?: number; message?: string };
+        res.status(error.status ?? 401).json({ error: error.message ?? "gateway_service_token_required" });
+        return;
+      }
+
       const tenantId = req.body.tenant_id || req.headers["x-tenant-id"];
       const toolName: string = req.body.name ?? req.body.tool;
       const args: Record<string, unknown> = req.body.arguments ?? {};
@@ -121,6 +180,18 @@ export function createConnectorGateway(): Router {
         packageTier: string;
         enabledTools?: string[];
       };
+
+      // I3: when the tenant's package tier is denied for this connector, hard
+      // 403 before calling enforce. Previously the gateway proceeded to
+      // enforce, which returned allow for any enabled+non-pending tool,
+      // creating a window where a denied-package tenant could still dispatch.
+      if (connInfo.packageTier === "denied") {
+        res.status(403).json({
+          isError: true,
+          content: [{ type: "text", text: "Tool call denied: package tier not entitled for this connector" }],
+        });
+        return;
+      }
 
       if (connInfo.enabledTools !== undefined && !connInfo.enabledTools.includes(toolName)) {
         res.status(403).json({
@@ -175,13 +246,32 @@ export function createConnectorGateway(): Router {
         enforceDecision.requires_approval === true ||
         decision === "require_approval";
 
-      if (decision === "deny") {
+      // C1: only an explicit decision === "allow" with no requires_approval
+      // may dispatch. Every other value (undefined from `200 {}`, unknown
+      // strings like "allow_with_caveats", or missing field) must fail closed.
+      if (decision !== "allow") {
+        if (decision === "deny") {
+          res.status(403).json({
+            isError: true,
+            content: [{
+              type: "text",
+              text: `Tool call denied by policy${typeof enforceDecision.reason === "string" ? `: ${enforceDecision.reason}` : ""}`,
+            }],
+          });
+          return;
+        }
+        if (requiresApproval) {
+          res.status(403).json({
+            isError: true,
+            content: [{ type: "text", text: "Tool call requires approval before dispatch" }],
+          });
+          return;
+        }
+        // Unknown or missing decision — fail closed.
+        console.warn("[connector-gateway] enforce returned non-allow decision, failing closed:", decision);
         res.status(403).json({
           isError: true,
-          content: [{
-            type: "text",
-            text: `Tool call denied by policy${typeof enforceDecision.reason === "string" ? `: ${enforceDecision.reason}` : ""}`,
-          }],
+          content: [{ type: "text", text: "Tool call denied by policy (unrecognized decision)" }],
         });
         return;
       }
@@ -209,13 +299,16 @@ export function createConnectorGateway(): Router {
 
         res.json(result);
       } catch (err) {
-        res.json({
+        // I4: log the connector error detail server-side, return a static
+        // message to the caller (do not leak connector endpoint URLs / stack).
+        console.error("[connector-gateway] connector dispatch error:", err instanceof Error ? err.message : String(err));
+        res.status(502).json({
           isError: true,
-          content: [{ type: "text", text: `Connector error: ${err instanceof Error ? err.message : String(err)}` }],
+          content: [{ type: "text", text: "Connector error: tool dispatch failed" }],
         });
       }
     } catch (err) {
-      res.status(500).json({ error: "gateway_error", message: String(err) });
+      failGateway(res, err);
     }
   });
 

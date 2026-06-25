@@ -8,7 +8,7 @@ import { assertBoard, assertCompanyAccess } from "./authz.js";
 import { logActivity } from "../services/activity-log.js";
 import { connectorEntitlementService } from "../services/connector-entitlement.js";
 import { connectorHandshakeService } from "../services/connector-handshake.js";
-import { createConnectorSchema, updateConnectorSchema, enableConnectorSchema, updateTenantConnectorSchema } from "@paperclipai/shared";
+import { createConnectorSchema, updateConnectorSchema, enableConnectorSchema, updateTenantConnectorSchema, toggleConnectorToolSchema } from "@paperclipai/shared";
 
 export function connectorRoutes(db: Db) {
   const router = Router();
@@ -347,6 +347,105 @@ export function connectorRoutes(db: Db) {
 
     res.json({ status: "disabled" });
   });
+
+  // ── Tenant-facing: List tools for a tenant connector ──
+  router.get("/companies/:companyId/connectors/:connectorId/tools", async (req, res) => {
+    assertBoard(req);
+    const companyId = req.params.companyId as string;
+    const connectorId = req.params.connectorId as string;
+    assertCompanyAccess(req, companyId);
+
+    const tc = await db
+      .select({ id: tenantConnectors.id })
+      .from(tenantConnectors)
+      .where(
+        and(
+          eq(tenantConnectors.tenantId, companyId),
+          eq(tenantConnectors.connectorId, connectorId),
+        ),
+      )
+      .limit(1)
+      .then((r) => r[0]);
+
+    if (!tc) { res.status(404).json({ error: "tenant_connector_not_found" }); return; }
+
+    const tools = await db
+      .select({
+        id: connectorToolRegistry.id,
+        toolName: connectorToolRegistry.toolName,
+        namespacedName: connectorToolRegistry.namespacedName,
+        description: connectorToolRegistry.description,
+        enabled: connectorToolRegistry.enabled,
+        pending: connectorToolRegistry.pending,
+        riskClass: connectorToolRegistry.riskClass,
+        approvalClass: connectorToolRegistry.approvalClass,
+        requiresApproval: connectorToolRegistry.requiresApproval,
+      })
+      .from(connectorToolRegistry)
+      .where(eq(connectorToolRegistry.tenantConnectorId, tc.id))
+      .orderBy(connectorToolRegistry.toolName);
+
+    res.json(tools);
+  });
+
+  // ── Tenant-facing: Toggle a connector tool's enabled status ──
+  router.post(
+    "/companies/:companyId/connectors/:connectorId/tools/:toolId/toggle",
+    validate(toggleConnectorToolSchema),
+    async (req, res) => {
+      assertBoard(req);
+      const companyId = req.params.companyId as string;
+      const connectorId = req.params.connectorId as string;
+      const toolId = req.params.toolId as string;
+      assertCompanyAccess(req, companyId);
+
+      const tc = await db
+        .select({ id: tenantConnectors.id })
+        .from(tenantConnectors)
+        .where(
+          and(
+            eq(tenantConnectors.tenantId, companyId),
+            eq(tenantConnectors.connectorId, connectorId),
+          ),
+        )
+        .limit(1)
+        .then((r) => r[0]);
+
+      if (!tc) { res.status(404).json({ error: "tenant_connector_not_found" }); return; }
+
+      const existing = await db
+        .select()
+        .from(connectorToolRegistry)
+        .where(
+          and(
+            eq(connectorToolRegistry.id, toolId),
+            eq(connectorToolRegistry.tenantConnectorId, tc.id),
+          ),
+        )
+        .limit(1)
+        .then((r) => r[0]);
+
+      if (!existing) { res.status(404).json({ error: "tool_not_found" }); return; }
+
+      const [updated] = await db
+        .update(connectorToolRegistry)
+        .set({ enabled: req.body.enabled })
+        .where(eq(connectorToolRegistry.id, toolId))
+        .returning();
+
+      await logActivity(db, {
+        companyId,
+        actorType: "user",
+        actorId: req.actor.userId ?? "board",
+        action: req.body.enabled ? "connector.tool_enabled" : "connector.tool_disabled",
+        entityType: "connector_tool",
+        entityId: toolId,
+        details: { connectorId, toolName: existing.toolName, namespacedName: existing.namespacedName },
+      });
+
+      res.json(updated);
+    },
+  );
 
   return router;
 }

@@ -247,4 +247,64 @@ describe("POST /api/core/enforce", () => {
     expect(recorder.whereCalls.length).toBeGreaterThan(0);
     expect(predicateHasNamespacedName(recorder.whereCalls[0])).toBe(true);
   });
+
+  // C2 regression: a caller posting tool_id as a non-string (e.g. an object
+  // {"__":"x"}) must get 400, not fall through to the builtin-tool short-
+  // circuit via String(tool_id) → "[object Object]" (no "__"). Enforce is
+  // directly exposed behind only a service token, so input validation matters.
+  it("returns 400 when tool_id is a non-string value (object)", async () => {
+    const { app } = createApp();
+    const res = await request(app)
+      .post("/api/core/enforce")
+      .set("Authorization", "Bearer test-cp-token")
+      .send({ tenant_id: "t-1", tool_id: { __: "x" } });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toContain("tool_id");
+  });
+
+  // C2 regression: tenant_id must also be a string; a number must 400.
+  it("returns 400 when tenant_id is a non-string value (number)", async () => {
+    const { app } = createApp();
+    const res = await request(app)
+      .post("/api/core/enforce")
+      .set("Authorization", "Bearer test-cp-token")
+      .send({ tenant_id: 12345, tool_id: "gmail__send_email" });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toContain("tenant_id");
+  });
+
+  // C2 regression: tool_id as an array must also be rejected with 400.
+  it("returns 400 when tool_id is a non-string value (array)", async () => {
+    const { app } = createApp();
+    const res = await request(app)
+      .post("/api/core/enforce")
+      .set("Authorization", "Bearer test-cp-token")
+      .send({ tenant_id: "t-1", tool_id: ["gmail__send_email"] });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toContain("tool_id");
+  });
+
+  // I2 regression: enforce must accept and pass through employee_id so the
+  // policy matrix can make per-employee decisions. The gateway forwards
+  // employee_id; enforce must not drop it silently. We verify it's accepted
+  // without error and the allow decision still works (the mock db ignores it,
+  // but the route must not 400 on its presence).
+  it("accepts employee_id in the request body without error", async () => {
+    const toolRows = [
+      { namespacedName: "gmail__send_email", enabled: true, pending: false, riskClass: "connector", approvalClass: "auto", requiresApproval: false },
+    ];
+    const mockDb = buildMockDb(toolRows, { whereCalls: [], joinCalls: [] });
+    const { app } = createApp(mockDb);
+
+    const res = await request(app)
+      .post("/api/core/enforce")
+      .set("Authorization", "Bearer test-cp-token")
+      .send({ tenant_id: "t-1", tool_id: "gmail__send_email", employee_id: "emp-42" });
+
+    expect(res.status).toBe(200);
+    expect(res.body.decision).toBe("allow");
+  });
 });
