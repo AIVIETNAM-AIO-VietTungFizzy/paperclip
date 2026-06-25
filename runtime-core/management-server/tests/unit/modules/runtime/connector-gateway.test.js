@@ -313,4 +313,70 @@ describe("connector-gateway allowlist + enforce", () => {
     expect(res.body.isError).toBe(true);
     expect(clientRequestMock).not.toHaveBeenCalled();
   });
+
+  // C2 regression: enforce returns HTTP 200 but the body is malformed /
+  // unreadable (e.g. truncated JSON, non-JSON content). The gateway must
+  // fail closed — 403, no dispatch — rather than treating an unreadable
+  // decision as an implicit allow.
+  it("fails closed when enforce returns 200 with unreadable body (malformed JSON)", async () => {
+    const request = (await import("supertest")).default;
+
+    mockFetch({
+      "connector-by-namespace/gmail": {
+        ok: true,
+        json: {
+          connectorKey: "gmail",
+          resolvedEndpoint: "http://gmail:3001",
+          packageTier: "free",
+          enabledTools: ["gmail__send_email"],
+        },
+      },
+    });
+
+    // Override the enforce fetch response so .json() rejects, simulating a
+    // malformed/unreadable body on an otherwise-OK (200) response.
+    globalThis.fetch = vi.fn().mockImplementation(async (url) => {
+      const urlStr = String(url);
+      if (urlStr.includes("connector-by-namespace/gmail")) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            connectorKey: "gmail",
+            resolvedEndpoint: "http://gmail:3001",
+            packageTier: "free",
+            enabledTools: ["gmail__send_email"],
+          }),
+        };
+      }
+      if (urlStr.includes("api/core/enforce")) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => {
+            throw new SyntaxError("Unexpected token in JSON");
+          },
+        };
+      }
+      return { ok: false, status: 502, json: async () => ({ error: "no_mock" }) };
+    });
+
+    // Silence the expected console.warn from the fail-closed path.
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    app = await createGatewayApp();
+
+    const res = await request(app)
+      .post("/connector/tools/call")
+      .send({
+        tenant_id: "tenant-1",
+        name: "gmail__send_email",
+        arguments: {},
+      });
+
+    expect(res.status).toBe(403);
+    expect(res.body.isError).toBe(true);
+    expect(clientRequestMock).not.toHaveBeenCalled();
+    expect(warnSpy).toHaveBeenCalled();
+  });
 });

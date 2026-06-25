@@ -18,28 +18,76 @@ interface MockQueryRecorder {
 }
 
 /**
- * Mock Db for the new enforce implementation: a single
- * connectorToolRegistry query joined to tenantConnectors, filtered by
- * tenantId + namespacedName. Records `where`/`innerJoin` arguments so tests
- * can assert the namespace predicate is present (I2).
+ * Returns true when a drizzle predicate references the
+ * `connectorToolRegistry.namespacedName` column. Drizzle stores the DB
+ * column name (`namespaced_name`) on the chunk object's `.name` property,
+ * and the real schema contains circular references (`PgTable.id.table` →
+ * table), so `JSON.stringify` throws. We walk the predicate tree with a
+ * visited set and look for any chunk whose `name === "namespaced_name"`,
+ * distinguishing the new query shape (and(... eq(namespacedName) ...)) from
+ * the old buggy shape (eq(tenantId) alone) without depending on private
+ * drizzle APIs.
+ */
+function predicateHasNamespacedName(predicate: unknown): boolean {
+  const seen = new WeakSet();
+  const stack: unknown[] = [predicate];
+  while (stack.length > 0) {
+    const node = stack.pop();
+    if (node === null || node === undefined) continue;
+    if (typeof node !== "object") continue;
+    if (seen.has(node)) continue;
+    seen.add(node);
+    if ((node as { name?: unknown }).name === "namespaced_name") return true;
+    if (Array.isArray(node)) {
+      for (const child of node) stack.push(child);
+    } else {
+      for (const value of Object.values(node as Record<string, unknown>)) {
+        stack.push(value);
+      }
+    }
+  }
+  return false;
+}
+
+/**
+ * Mock Db for the new enforce implementation. The mock is **predicate-aware**:
+ * `where()` receives an `and(eq(tenantId), eq(namespacedName))` predicate on
+ * the new query shape, but the old buggy code called `where(eq(tenantId))`
+ * alone. We return `[]` (tool_not_registered) for tenantId-only predicates
+ * and the canned `toolRows` only when a `namespacedName` predicate is
+ * present, so the C1 regression test fails against the old code.
+ *
+ * Records `where`/`innerJoin` arguments so tests can assert the namespace
+ * predicate is present (I2).
  */
 function buildMockDb(toolRows: unknown[], recorder: MockQueryRecorder) {
-  const whereFn = vi.fn().mockImplementation((...predicates: unknown[]) => {
-    recorder.whereCalls.push(predicates);
-    return chain;
+  const whereFn = vi.fn().mockImplementation((predicate: unknown) => {
+    recorder.whereCalls.push([predicate]);
+    // Simulate DB semantics: a tenantId-only predicate (the old query
+    // shape) never matches the namespaced tool row the test provides, so
+    // the buggy code would see an empty result and deny with
+    // tool_not_registered. Only the namespacedName-scoped predicate (the
+    // new query shape) returns the canned row.
+    return predicateHasNamespacedName(predicate) ? chainRows : chainEmpty;
   });
   const innerJoinFn = vi.fn().mockImplementation((...args: unknown[]) => {
     recorder.joinCalls.push(args);
-    return chain;
+    return chainRows;
   });
-  const chain = Object.assign(Promise.resolve(toolRows), {
+  const chainEmpty = Object.assign(Promise.resolve([]), {
+    from: vi.fn().mockReturnThis(),
+    innerJoin: innerJoinFn,
+    where: whereFn,
+    limit: vi.fn().mockReturnThis(),
+  });
+  const chainRows = Object.assign(Promise.resolve(toolRows), {
     from: vi.fn().mockReturnThis(),
     innerJoin: innerJoinFn,
     where: whereFn,
     limit: vi.fn().mockReturnThis(),
   });
   return {
-    select: vi.fn().mockReturnValue(chain),
+    select: vi.fn().mockReturnValue(chainRows),
   } as unknown as Parameters<typeof enforceRoutes>[0];
 }
 
@@ -107,8 +155,9 @@ describe("POST /api/core/enforce", () => {
     expect(res.body.decision).toBe("allow");
     expect(res.body.risk_class).toBe("connector");
     expect(res.body.approval_class).toBe("auto");
-    // I2: the query must filter by namespacedName (predicate present)
+    // I2: the query must be scoped by namespacedName, not just tenantId.
     expect(recorder.whereCalls.length).toBeGreaterThan(0);
+    expect(predicateHasNamespacedName(recorder.whereCalls[0])).toBe(true);
   });
 
   it("denies namespaced tool that is disabled in the registry", async () => {
@@ -191,8 +240,11 @@ describe("POST /api/core/enforce", () => {
 
     expect(res.status).toBe(200);
     expect(res.body.decision).toBe("allow");
-    // The query must be scoped by namespacedName so the slack row is selected
-    // even though gmail is also configured for this tenant.
+    // C1 + I2: the query must be scoped by namespacedName so the slack row is
+    // selected even though gmail is also configured for this tenant. The
+    // predicate-aware mock returns [] for tenantId-only queries (the old
+    // shape), so this assertion only passes when the new query shape is used.
     expect(recorder.whereCalls.length).toBeGreaterThan(0);
+    expect(predicateHasNamespacedName(recorder.whereCalls[0])).toBe(true);
   });
 });

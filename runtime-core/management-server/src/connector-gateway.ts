@@ -160,8 +160,9 @@ export function createConnectorGateway(): Router {
       let enforceDecision: Record<string, unknown> = {};
       try {
         enforceDecision = await enforceResponse.json() as Record<string, unknown>;
-      } catch {
+      } catch (err) {
         // Malformed body — fail closed.
+        console.warn("[connector-gateway] enforce response body unreadable, failing closed:", err instanceof Error ? err.message : String(err));
         res.status(403).json({
           isError: true,
           content: [{ type: "text", text: "Tool call denied by policy (enforce unreadable)" }],
