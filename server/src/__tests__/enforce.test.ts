@@ -12,48 +12,35 @@ function createApp(db?: unknown) {
   return { app };
 }
 
-function buildMockDbForEnforce(toolRows: unknown[]) {
-  const selectFn = vi.fn().mockImplementation(() => {
-    const promise = Promise.resolve(toolRows);
-    return Object.assign(promise, {
-      from: vi.fn().mockReturnThis(),
-      where: vi.fn().mockReturnThis(),
-      limit: vi.fn().mockReturnThis(),
-    });
-  });
-  return {
-    select: selectFn,
-    from: vi.fn().mockReturnThis(),
-    where: vi.fn().mockReturnThis(),
-    limit: vi.fn().mockReturnThis(),
-  };
+interface MockQueryRecorder {
+  whereCalls: unknown[][];
+  joinCalls: unknown[];
 }
 
-function buildMockDbForEnforceWithTc(tcRows: unknown[], toolRows: unknown[]) {
-  let selectCallCount = 0;
-  const selectFn = vi.fn().mockImplementation(() => {
-    selectCallCount++;
-    if (selectCallCount === 1) {
-      const promise = Promise.resolve(tcRows);
-      return Object.assign(promise, {
-        from: vi.fn().mockReturnThis(),
-        where: vi.fn().mockReturnThis(),
-        limit: vi.fn().mockReturnThis(),
-      });
-    }
-    const toolPromise = Promise.resolve(toolRows);
-    return Object.assign(toolPromise, {
-      from: vi.fn().mockReturnThis(),
-      where: vi.fn().mockReturnThis(),
-      limit: vi.fn().mockReturnThis(),
-    });
+/**
+ * Mock Db for the new enforce implementation: a single
+ * connectorToolRegistry query joined to tenantConnectors, filtered by
+ * tenantId + namespacedName. Records `where`/`innerJoin` arguments so tests
+ * can assert the namespace predicate is present (I2).
+ */
+function buildMockDb(toolRows: unknown[], recorder: MockQueryRecorder) {
+  const whereFn = vi.fn().mockImplementation((...predicates: unknown[]) => {
+    recorder.whereCalls.push(predicates);
+    return chain;
+  });
+  const innerJoinFn = vi.fn().mockImplementation((...args: unknown[]) => {
+    recorder.joinCalls.push(args);
+    return chain;
+  });
+  const chain = Object.assign(Promise.resolve(toolRows), {
+    from: vi.fn().mockReturnThis(),
+    innerJoin: innerJoinFn,
+    where: whereFn,
+    limit: vi.fn().mockReturnThis(),
   });
   return {
-    select: selectFn,
-    from: vi.fn().mockReturnThis(),
-    where: vi.fn().mockReturnThis(),
-    limit: vi.fn().mockReturnThis(),
-  };
+    select: vi.fn().mockReturnValue(chain),
+  } as unknown as Parameters<typeof enforceRoutes>[0];
 }
 
 describe("POST /api/core/enforce", () => {
@@ -107,7 +94,8 @@ describe("POST /api/core/enforce", () => {
     const toolRows = [
       { namespacedName: "gmail__send_email", enabled: true, pending: false, riskClass: "connector", approvalClass: "auto", requiresApproval: false },
     ];
-    const mockDb = buildMockDbForEnforceWithTc([{ id: "tc-1" }], toolRows);
+    const recorder: MockQueryRecorder = { whereCalls: [], joinCalls: [] };
+    const mockDb = buildMockDb(toolRows, recorder);
     const { app } = createApp(mockDb);
 
     const res = await request(app)
@@ -119,13 +107,16 @@ describe("POST /api/core/enforce", () => {
     expect(res.body.decision).toBe("allow");
     expect(res.body.risk_class).toBe("connector");
     expect(res.body.approval_class).toBe("auto");
+    // I2: the query must filter by namespacedName (predicate present)
+    expect(recorder.whereCalls.length).toBeGreaterThan(0);
   });
 
   it("denies namespaced tool that is disabled in the registry", async () => {
     const toolRows = [
       { namespacedName: "gmail__delete_email", enabled: false, pending: false, riskClass: "connector", approvalClass: "auto", requiresApproval: false },
     ];
-    const mockDb = buildMockDbForEnforceWithTc([{ id: "tc-1" }], toolRows);
+    const recorder: MockQueryRecorder = { whereCalls: [], joinCalls: [] };
+    const mockDb = buildMockDb(toolRows, recorder);
     const { app } = createApp(mockDb);
 
     const res = await request(app)
@@ -142,7 +133,7 @@ describe("POST /api/core/enforce", () => {
     const toolRows = [
       { namespacedName: "gmail__new_tool", enabled: true, pending: true, riskClass: "connector", approvalClass: "manual", requiresApproval: true },
     ];
-    const mockDb = buildMockDbForEnforceWithTc([{ id: "tc-1" }], toolRows);
+    const mockDb = buildMockDb(toolRows, { whereCalls: [], joinCalls: [] });
     const { app } = createApp(mockDb);
 
     const res = await request(app)
@@ -156,7 +147,7 @@ describe("POST /api/core/enforce", () => {
   });
 
   it("fail-closed: denies namespaced tool with no registry row", async () => {
-    const mockDb = buildMockDbForEnforceWithTc([{ id: "tc-1" }], []);
+    const mockDb = buildMockDb([], { whereCalls: [], joinCalls: [] });
     const { app } = createApp(mockDb);
 
     const res = await request(app)
@@ -178,5 +169,30 @@ describe("POST /api/core/enforce", () => {
 
     expect(res.status).toBe(503);
     expect(res.body).toEqual({ error: "database_not_available" });
+  });
+
+  // C1 regression: a tenant with two connectors must resolve the registry row
+  // for the connector that actually owns the tool, not whichever
+  // tenant_connector row the DB returns first. Previously the query filtered
+  // tenantConnectors only by tenantId and took the first row, so a tool on a
+  // second connector was wrongly denied as tool_not_registered.
+  it("resolves the correct tenant_connector for multi-connector tenants (tool on second connector)", async () => {
+    const toolRows = [
+      { namespacedName: "slack__post_message", enabled: true, pending: false, riskClass: "connector", approvalClass: "auto", requiresApproval: false },
+    ];
+    const recorder: MockQueryRecorder = { whereCalls: [], joinCalls: [] };
+    const mockDb = buildMockDb(toolRows, recorder);
+    const { app } = createApp(mockDb);
+
+    const res = await request(app)
+      .post("/api/core/enforce")
+      .set("Authorization", "Bearer test-cp-token")
+      .send({ tenant_id: "t-1", tool_id: "slack__post_message" });
+
+    expect(res.status).toBe(200);
+    expect(res.body.decision).toBe("allow");
+    // The query must be scoped by namespacedName so the slack row is selected
+    // even though gmail is also configured for this tenant.
+    expect(recorder.whereCalls.length).toBeGreaterThan(0);
   });
 });

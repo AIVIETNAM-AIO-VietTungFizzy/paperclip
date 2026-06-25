@@ -144,7 +144,6 @@ export function createConnectorGateway(): Router {
           employee_id: (req.body.employee_id as string | undefined) ?? null,
           session_id: (req.body.session_id as string | undefined) ?? null,
           package: connInfo.packageTier,
-          risk_class: "connector",
         }),
       });
 
@@ -152,6 +151,44 @@ export function createConnectorGateway(): Router {
         res.status(403).json({
           isError: true,
           content: [{ type: "text", text: "Tool call denied by policy (enforce fail-closed)" }],
+        });
+        return;
+      }
+
+      // Parse the enforce decision body. A 200 can still carry decision "deny"
+      // or requires_approval: true, both of which must block dispatch (C2).
+      let enforceDecision: Record<string, unknown> = {};
+      try {
+        enforceDecision = await enforceResponse.json() as Record<string, unknown>;
+      } catch {
+        // Malformed body — fail closed.
+        res.status(403).json({
+          isError: true,
+          content: [{ type: "text", text: "Tool call denied by policy (enforce unreadable)" }],
+        });
+        return;
+      }
+
+      const decision = enforceDecision.decision;
+      const requiresApproval =
+        enforceDecision.requires_approval === true ||
+        decision === "require_approval";
+
+      if (decision === "deny") {
+        res.status(403).json({
+          isError: true,
+          content: [{
+            type: "text",
+            text: `Tool call denied by policy${typeof enforceDecision.reason === "string" ? `: ${enforceDecision.reason}` : ""}`,
+          }],
+        });
+        return;
+      }
+
+      if (requiresApproval) {
+        res.status(403).json({
+          isError: true,
+          content: [{ type: "text", text: "Tool call requires approval before dispatch" }],
         });
         return;
       }

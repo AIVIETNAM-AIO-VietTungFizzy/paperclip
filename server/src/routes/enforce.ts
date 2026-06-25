@@ -1,6 +1,6 @@
 import { timingSafeEqual } from "node:crypto";
 import { Router } from "express";
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { connectorToolRegistry, tenantConnectors } from "@paperclipai/db";
 
@@ -63,18 +63,11 @@ export function enforceRoutes(db?: Db) {
     }
 
     try {
-      const tcRow = await db
-        .select({ id: tenantConnectors.id })
-        .from(tenantConnectors)
-        .where(eq(tenantConnectors.tenantId, tenant_id as string))
-        .limit(1)
-        .then((r) => r[0]);
-
-      if (!tcRow) {
-        res.status(403).json({ decision: "deny", reason: "tenant_connector_not_found" });
-        return;
-      }
-
+      // Resolve the registry row scoped to the tenant + namespaced tool name.
+      // Joining tenantConnectors ensures we only match rows belonging to the
+      // tenant, and filtering by namespacedName pins the exact tool so a
+      // multi-connector tenant resolves the correct connector's registry
+      // (C1: previously we picked any tenant_connector row by tenantId alone).
       const toolRow = await db
         .select({
           namespacedName: connectorToolRegistry.namespacedName,
@@ -85,9 +78,18 @@ export function enforceRoutes(db?: Db) {
           requiresApproval: connectorToolRegistry.requiresApproval,
         })
         .from(connectorToolRegistry)
-        .where(eq(connectorToolRegistry.tenantConnectorId, tcRow.id))
-        .limit(100)
-        .then((r) => r.find((t) => t.namespacedName === tool_id));
+        .innerJoin(
+          tenantConnectors,
+          eq(connectorToolRegistry.tenantConnectorId, tenantConnectors.id),
+        )
+        .where(
+          and(
+            eq(tenantConnectors.tenantId, tenant_id as string),
+            eq(connectorToolRegistry.namespacedName, String(tool_id)),
+          ),
+        )
+        .limit(1)
+        .then((r) => r[0]);
 
       if (!toolRow) {
         res.status(403).json({ decision: "deny", reason: "tool_not_registered" });

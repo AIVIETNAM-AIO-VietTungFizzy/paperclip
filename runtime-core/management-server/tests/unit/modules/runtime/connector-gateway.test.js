@@ -240,4 +240,77 @@ describe("connector-gateway allowlist + enforce", () => {
     expect(res.body.isError).toBe(true);
     expect(clientRequestMock).not.toHaveBeenCalled();
   });
+
+  // C2 regression: enforce can return HTTP 200 with decision "deny". The
+  // gateway must parse the body and reject, not just check `ok`.
+  it("fails closed when enforce returns 200 with decision deny", async () => {
+    const request = (await import("supertest")).default;
+
+    mockFetch({
+      "connector-by-namespace/gmail": {
+        ok: true,
+        json: {
+          connectorKey: "gmail",
+          resolvedEndpoint: "http://gmail:3001",
+          packageTier: "free",
+          enabledTools: ["gmail__send_email"],
+        },
+      },
+      "api/core/enforce": {
+        ok: true,
+        json: { decision: "deny", reason: "tool_disabled" },
+      },
+    });
+
+    app = await createGatewayApp();
+
+    const res = await request(app)
+      .post("/connector/tools/call")
+      .send({
+        tenant_id: "tenant-1",
+        name: "gmail__send_email",
+        arguments: {},
+      });
+
+    expect(res.status).toBe(403);
+    expect(res.body.isError).toBe(true);
+    expect(clientRequestMock).not.toHaveBeenCalled();
+  });
+
+  // C2 regression: enforce returns 200 with requires_approval: true for tools
+  // requiring an approval gate. The gateway must NOT dispatch the tool call;
+  // it must return 403 so the caller can surface the pending-approval state.
+  it("fails closed when enforce returns 200 with requires_approval true (no dispatch)", async () => {
+    const request = (await import("supertest")).default;
+
+    mockFetch({
+      "connector-by-namespace/gmail": {
+        ok: true,
+        json: {
+          connectorKey: "gmail",
+          resolvedEndpoint: "http://gmail:3001",
+          packageTier: "free",
+          enabledTools: ["gmail__send_email"],
+        },
+      },
+      "api/core/enforce": {
+        ok: true,
+        json: { decision: "allow", requires_approval: true },
+      },
+    });
+
+    app = await createGatewayApp();
+
+    const res = await request(app)
+      .post("/connector/tools/call")
+      .send({
+        tenant_id: "tenant-1",
+        name: "gmail__send_email",
+        arguments: {},
+      });
+
+    expect(res.status).toBe(403);
+    expect(res.body.isError).toBe(true);
+    expect(clientRequestMock).not.toHaveBeenCalled();
+  });
 });
