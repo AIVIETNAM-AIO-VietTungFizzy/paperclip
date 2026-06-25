@@ -39,6 +39,7 @@ export function createConnectorGateway(): Router {
           connectorKey: string;
           namespace: string;
           resolvedEndpoint: string;
+          enabledTools?: string[];
         }>;
 
         for (const conn of enabledConnectors) {
@@ -56,9 +57,14 @@ export function createConnectorGateway(): Router {
             );
 
             const tools = ((result as Record<string, unknown>).tools as Array<Record<string, unknown>>) ?? [];
+            const allowlist = conn.enabledTools;
             for (const tool of tools) {
+              const namespacedName = `${conn.namespace}__${tool.name}`;
+              if (allowlist !== undefined && !allowlist.includes(namespacedName)) {
+                continue;
+              }
               connectorTools.push({
-                name: `${conn.namespace}__${tool.name}`,
+                name: namespacedName,
                 description: tool.description as string | undefined,
                 input_schema: tool.inputSchema as Record<string, unknown> | undefined,
               });
@@ -113,7 +119,16 @@ export function createConnectorGateway(): Router {
         connectorKey: string;
         resolvedEndpoint: string;
         packageTier: string;
+        enabledTools?: string[];
       };
+
+      if (connInfo.enabledTools !== undefined && !connInfo.enabledTools.includes(toolName)) {
+        res.status(403).json({
+          isError: true,
+          content: [{ type: "text", text: `Tool '${toolName}' is not enabled for this connector` }],
+        });
+        return;
+      }
 
       const enforceResponse = await fetch(`${CP_BASE_URL}/api/core/enforce`, {
         method: "POST",
@@ -123,16 +138,20 @@ export function createConnectorGateway(): Router {
         },
         body: JSON.stringify({
           tenant_id: tenantId,
-          tool: toolName,
+          tool_id: toolName,
+          intent_kind: "connector_tool_call",
+          caller_service: "connector-gateway",
+          employee_id: (req.body.employee_id as string | undefined) ?? null,
+          session_id: (req.body.session_id as string | undefined) ?? null,
+          package: connInfo.packageTier,
           risk_class: "connector",
-          package_tier: connInfo.packageTier,
         }),
       });
 
       if (!enforceResponse.ok) {
         res.status(403).json({
           isError: true,
-          content: [{ type: "text", text: "Tool call denied by policy" }],
+          content: [{ type: "text", text: "Tool call denied by policy (enforce fail-closed)" }],
         });
         return;
       }

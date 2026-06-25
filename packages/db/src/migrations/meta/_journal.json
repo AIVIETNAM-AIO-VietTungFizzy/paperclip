@@ -701,6 +701,13 @@
       "when": 1781662877386,
       "tag": "0099_swift_rattler",
       "breakpoints": true
+    },
+    {
+      "idx": 100,
+      "version": "7",
+      "when": 1781846400000,
+      "tag": "0100_connector_tool_registry_governance",
+      "breakpoints": true
     }
   ]
 }

@@ -275,7 +275,9 @@ describe("GET /api/runtime/internal/tenants/:tenantId/enabled-connectors", () =>
       .set("Authorization", "Bearer test-cp-token");
 
     expect(res.status).toBe(200);
-    expect(res.body).toEqual(mockRows);
+    expect(res.body).toEqual([
+      { ...mockRows[0], enabledTools: [], pendingTools: [] },
+    ]);
   });
 
   it("returns empty array when no connectors are enabled", async () => {
@@ -288,6 +290,48 @@ describe("GET /api/runtime/internal/tenants/:tenantId/enabled-connectors", () =>
 
     expect(res.status).toBe(200);
     expect(res.body).toEqual([]);
+  });
+
+  it("includes enabledTools and pendingTools from connector_tool_registry", async () => {
+    const connectorRows = [
+      { id: "tc-1", connectorKey: "gmail", connectorName: "Gmail", namespace: "gmail", resolvedEndpoint: "http://gmail:3001", status: "enabled" },
+    ];
+    const toolRows = [
+      { tenantConnectorId: "tc-1", namespacedName: "gmail__send_email", enabled: true, pending: false },
+      { tenantConnectorId: "tc-1", namespacedName: "gmail__list_emails", enabled: false, pending: true },
+    ];
+    const mockDb = buildMockDbWithTools(connectorRows, toolRows);
+    const { app } = createApp(mockDb);
+
+    const res = await request(app)
+      .get("/api/runtime/internal/tenants/tenant-1/enabled-connectors")
+      .set("Authorization", "Bearer test-cp-token");
+
+    expect(res.status).toBe(200);
+    expect(res.body).toHaveLength(1);
+    expect(res.body[0]).toMatchObject({
+      connectorKey: "gmail",
+      namespace: "gmail",
+      enabledTools: ["gmail__send_email"],
+      pendingTools: ["gmail__list_emails"],
+    });
+  });
+
+  it("omits enabledTools/pendingTools when registry has no rows (pass-through)", async () => {
+    const connectorRows = [
+      { id: "tc-1", connectorKey: "gmail", connectorName: "Gmail", namespace: "gmail", resolvedEndpoint: "http://gmail:3001", status: "enabled" },
+    ];
+    const mockDb = buildMockDbWithTools(connectorRows, []);
+    const { app } = createApp(mockDb);
+
+    const res = await request(app)
+      .get("/api/runtime/internal/tenants/tenant-1/enabled-connectors")
+      .set("Authorization", "Bearer test-cp-token");
+
+    expect(res.status).toBe(200);
+    expect(res.body[0]).toMatchObject({ connectorKey: "gmail" });
+    expect(res.body[0].enabledTools).toEqual([]);
+    expect(res.body[0].pendingTools).toEqual([]);
   });
 });
 
@@ -355,7 +399,7 @@ describe("GET /api/runtime/internal/tenants/:tenantId/connector-by-namespace/:na
       .set("Authorization", "Bearer test-cp-token");
 
     expect(res.status).toBe(200);
-    expect(res.body).toEqual({ ...mockRow, packageTier: "growth" });
+    expect(res.body).toEqual({ ...mockRow, packageTier: "growth", enabledTools: [] });
   });
 
   it("returns denied packageTier when tenant tier is not in allowedPackages", async () => {
@@ -398,6 +442,31 @@ describe("GET /api/runtime/internal/tenants/:tenantId/connector-by-namespace/:na
     expect(res.status).toBe(200);
     expect(res.body.packageTier).toBe("free");
   });
+
+  it("includes enabledTools from connector_tool_registry when found", async () => {
+    const mockRow = {
+      id: "tc-1",
+      connectorKey: "gmail",
+      connectorName: "Gmail",
+      namespace: "gmail",
+      resolvedEndpoint: "http://gmail:3001",
+      allowedPackages: ["free"],
+    };
+    const toolRows = [
+      { tenantConnectorId: "tc-1", namespacedName: "gmail__send_email", enabled: true, pending: false },
+    ];
+    const mockDb = buildMockDbWithTools([mockRow], toolRows);
+    const { app, store } = createApp(mockDb);
+    store.setTenantTier("tenant-1", "free", []);
+
+    const res = await request(app)
+      .get("/api/runtime/internal/tenants/tenant-1/connector-by-namespace/gmail")
+      .set("Authorization", "Bearer test-cp-token");
+
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({ connectorKey: "gmail", packageTier: "free" });
+    expect(res.body.enabledTools).toEqual(["gmail__send_email"]);
+  });
 });
 
 function buildMockDb(connectorsResult: Array<{ id: string; allowedPackages: string[] }>) {
@@ -428,20 +497,65 @@ function buildMockDb(connectorsResult: Array<{ id: string; allowedPackages: stri
 }
 
 function buildMockDbForInternalRoutes(rows: unknown[]) {
-  const promise = Promise.resolve(rows);
-  const chain = Object.assign(promise, {
-    from: vi.fn().mockReturnThis(),
-    where: vi.fn().mockReturnThis(),
-    innerJoin: vi.fn().mockReturnThis(),
-    limit: vi.fn().mockReturnThis(),
+  let selectCallCount = 0;
+  const selectFn = vi.fn().mockImplementation(() => {
+    selectCallCount++;
+    if (selectCallCount === 1) {
+      const promise = Promise.resolve(rows);
+      return Object.assign(promise, {
+        from: vi.fn().mockReturnThis(),
+        where: vi.fn().mockReturnThis(),
+        innerJoin: vi.fn().mockReturnThis(),
+        limit: vi.fn().mockReturnThis(),
+      });
+    }
+    const toolPromise = Promise.resolve([]);
+    return Object.assign(toolPromise, {
+      from: vi.fn().mockReturnThis(),
+      where: vi.fn().mockReturnThis(),
+      inArray: vi.fn().mockReturnThis(),
+    });
   });
-  const selectFn = vi.fn().mockReturnValue(chain);
   return {
     select: selectFn,
     from: vi.fn().mockReturnThis(),
     where: vi.fn().mockReturnThis(),
     innerJoin: vi.fn().mockReturnThis(),
     limit: vi.fn().mockReturnThis(),
+    inArray: vi.fn().mockReturnThis(),
+    then: vi.fn(),
+    update: vi.fn(),
+    set: vi.fn(),
+  };
+}
+
+function buildMockDbWithTools(connectorRows: unknown[], toolRows: unknown[]) {
+  let selectCallCount = 0;
+  const selectFn = vi.fn().mockImplementation(() => {
+    selectCallCount++;
+    if (selectCallCount === 1) {
+      const promise = Promise.resolve(connectorRows);
+      return Object.assign(promise, {
+        from: vi.fn().mockReturnThis(),
+        where: vi.fn().mockReturnThis(),
+        innerJoin: vi.fn().mockReturnThis(),
+        limit: vi.fn().mockReturnThis(),
+      });
+    }
+    const toolPromise = Promise.resolve(toolRows);
+    return Object.assign(toolPromise, {
+      from: vi.fn().mockReturnThis(),
+      where: vi.fn().mockReturnThis(),
+      inArray: vi.fn().mockReturnThis(),
+    });
+  });
+  return {
+    select: selectFn,
+    from: vi.fn().mockReturnThis(),
+    where: vi.fn().mockReturnThis(),
+    innerJoin: vi.fn().mockReturnThis(),
+    limit: vi.fn().mockReturnThis(),
+    inArray: vi.fn().mockReturnThis(),
     then: vi.fn(),
     update: vi.fn(),
     set: vi.fn(),

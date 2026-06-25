@@ -231,4 +231,37 @@ describe("connectorHandshakeService", () => {
 
     expect(mockClient.instances[0].close).toHaveBeenCalled();
   });
+
+  it("sets governance defaults (enabled, risk_class, approval_class) when inserting tools", async () => {
+    requestResult = {
+      tools: [
+        { name: "send_email", description: "Send an email", inputSchema: { type: "object" } },
+      ],
+    };
+
+    const tcRow = { id: "tc-1", tenantId: "tenant-1", connectorId: "conn-1" };
+    const selectChain = makeSelectChain([tcRow]);
+    mockDb.select.mockReturnValue(selectChain);
+
+    const insertChain = makeInsertChain();
+    mockDb.insert.mockReturnValue(insertChain);
+
+    const updateChain = makeUpdateChain();
+    mockDb.update.mockReturnValue(updateChain);
+
+    await handshakeService.handshake(
+      "tenant-1", "conn-1", "http://example.com/mcp", "gmail",
+    );
+
+    expect(insertChain.values).toHaveBeenCalledTimes(1);
+    const insertedValues = insertChain.values.mock.calls[0][0] as Record<string, unknown>;
+    expect(insertedValues.tenantConnectorId).toBe("tc-1");
+    expect(insertedValues.toolName).toBe("send_email");
+    expect(insertedValues.namespacedName).toBe("gmail__send_email");
+    expect(insertedValues.enabled).toBe(true);
+    expect(insertedValues.pending).toBe(false);
+    expect(insertedValues.riskClass).toBe("connector");
+    expect(insertedValues.approvalClass).toBe("auto");
+    expect(insertedValues.requiresApproval).toBe(false);
+  });
 });

@@ -1,8 +1,8 @@
 import { timingSafeEqual } from "node:crypto";
 import { Router } from "express";
-import { eq, and, notInArray } from "drizzle-orm";
+import { eq, and, notInArray, inArray } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { connectors, tenantConnectors } from "@paperclipai/db";
+import { connectors, tenantConnectors, connectorToolRegistry } from "@paperclipai/db";
 import type { EntitlementStore } from "../services/entitlement-store.js";
 
 function requireCpAuth(req: import("express").Request): void {
@@ -139,7 +139,41 @@ export function internalRoutes(
         ),
       );
 
-    res.json(rows);
+    const tcIds = rows.map((r) => r.id);
+    let toolRows: Array<{ tenantConnectorId: string; namespacedName: string; enabled: boolean; pending: boolean }> = [];
+    if (tcIds.length > 0) {
+      toolRows = await db
+        .select({
+          tenantConnectorId: connectorToolRegistry.tenantConnectorId,
+          namespacedName: connectorToolRegistry.namespacedName,
+          enabled: connectorToolRegistry.enabled,
+          pending: connectorToolRegistry.pending,
+        })
+        .from(connectorToolRegistry)
+        .where(inArray(connectorToolRegistry.tenantConnectorId, tcIds));
+    }
+
+    const toolsByTc = new Map<string, { enabled: string[]; pending: string[] }>();
+    for (const tr of toolRows) {
+      let bucket = toolsByTc.get(tr.tenantConnectorId);
+      if (!bucket) {
+        bucket = { enabled: [], pending: [] };
+        toolsByTc.set(tr.tenantConnectorId, bucket);
+      }
+      if (tr.enabled) bucket.enabled.push(tr.namespacedName);
+      if (tr.pending) bucket.pending.push(tr.namespacedName);
+    }
+
+    const result = rows.map((r) => {
+      const bucket = toolsByTc.get(r.id);
+      return {
+        ...r,
+        enabledTools: bucket?.enabled ?? [],
+        pendingTools: bucket?.pending ?? [],
+      };
+    });
+
+    res.json(result);
   });
 
   router.get("/tenants/:tenantId/connector-by-namespace/:namespace", async (req, res) => {
@@ -184,7 +218,22 @@ export function internalRoutes(
     const tier = entitlementStore.getTierForCompany(tenantId) ?? "free";
     const packageTier = row.allowedPackages?.includes(tier) ? tier : "denied";
 
-    res.json({ ...row, packageTier });
+    const toolRows = await db
+      .select({
+        namespacedName: connectorToolRegistry.namespacedName,
+        enabled: connectorToolRegistry.enabled,
+      })
+      .from(connectorToolRegistry)
+      .where(
+        and(
+          eq(connectorToolRegistry.tenantConnectorId, row.id),
+          eq(connectorToolRegistry.enabled, true),
+        ),
+      );
+
+    const enabledTools = toolRows.map((tr) => tr.namespacedName);
+
+    res.json({ ...row, packageTier, enabledTools });
   });
 
   return router;

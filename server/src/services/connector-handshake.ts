@@ -61,6 +61,11 @@ export function connectorHandshakeService(db: Db) {
                 namespacedName,
                 description: (tool.description as string | null) ?? null,
                 inputSchema: tool.inputSchema as Record<string, unknown> | null ?? null,
+                enabled: true,
+                pending: false,
+                riskClass: "connector",
+                approvalClass: "auto",
+                requiresApproval: false,
               })
               .onConflictDoNothing({ target: [connectorToolRegistry.tenantConnectorId, connectorToolRegistry.toolName] });
           }
