@@ -61,6 +61,7 @@ export function connectorHandshakeService(db: Db) {
                 namespacedName,
                 description: (tool.description as string | null) ?? null,
                 inputSchema: tool.inputSchema as Record<string, unknown> | null ?? null,
+                toolType: "tool",
                 enabled: true,
                 pending: false,
                 riskClass: "connector",

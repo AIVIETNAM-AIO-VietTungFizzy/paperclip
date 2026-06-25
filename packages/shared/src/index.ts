@@ -1316,10 +1316,12 @@ export {
   updateConnectorSchema,
   enableConnectorSchema,
   updateTenantConnectorSchema,
+  toggleSkillSchema,
   type CreateConnector,
   type UpdateConnector,
   type EnableConnector,
   type UpdateTenantConnector,
+  type ToggleSkill,
 } from "./validators/connector.js";
 
 export { API_PREFIX, API } from "./api.js";

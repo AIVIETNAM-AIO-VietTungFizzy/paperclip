@@ -8,12 +8,16 @@ import { assertBoard, assertCompanyAccess } from "./authz.js";
 import { logActivity } from "../services/activity-log.js";
 import { connectorEntitlementService } from "../services/connector-entitlement.js";
 import { connectorHandshakeService } from "../services/connector-handshake.js";
-import { createConnectorSchema, updateConnectorSchema, enableConnectorSchema, updateTenantConnectorSchema } from "@paperclipai/shared";
+import { agentCardIngestionService } from "../services/agent-card-ingestion.js";
+import { skillPermissionsProjectionService } from "../services/skill-permissions-projection.js";
+import { createConnectorSchema, updateConnectorSchema, enableConnectorSchema, updateTenantConnectorSchema, toggleSkillSchema } from "@paperclipai/shared";
 
 export function connectorRoutes(db: Db) {
   const router = Router();
   const entitlement = connectorEntitlementService(db);
   const handshake = connectorHandshakeService(db);
+  const cardIngestion = agentCardIngestionService(db);
+  const skillProjection = skillPermissionsProjectionService(db);
 
   router.get("/connectors", async (_req, res) => {
     const all = await db.select().from(connectorsTable).orderBy(connectorsTable.connectorName);
@@ -347,6 +351,129 @@ export function connectorRoutes(db: Db) {
 
     res.json({ status: "disabled" });
   });
+
+  // LLG-4.3: per-skill enable/disable for agent connectors. Persists the toggle
+  // on connector_tool_registry and projects the resulting skill allowlist into
+  // the mcp_tool_permissions shape the LLG-2.3 reconciler writes to LiteLLM.
+  router.patch(
+    "/companies/:companyId/connectors/:connectorId/skills/:skillId",
+    validate(toggleSkillSchema),
+    async (req, res) => {
+      assertBoard(req);
+      const companyId = req.params.companyId as string;
+      const connectorId = req.params.connectorId as string;
+      const skillId = req.params.skillId as string;
+      assertCompanyAccess(req, companyId);
+
+      const enabled = req.body.enabled as boolean;
+
+      const tcRow = await db
+        .select()
+        .from(tenantConnectors)
+        .where(
+          and(
+            eq(tenantConnectors.tenantId, companyId),
+            eq(tenantConnectors.connectorId, connectorId),
+          ),
+        )
+        .limit(1)
+        .then((r) => r[0]);
+
+      if (!tcRow) { res.status(404).json({ error: "tenant_connector_not_found" }); return; }
+
+      const registryRow = await db
+        .select()
+        .from(connectorToolRegistry)
+        .where(
+          and(
+            eq(connectorToolRegistry.tenantConnectorId, tcRow.id),
+            eq(connectorToolRegistry.toolName, skillId),
+          ),
+        )
+        .limit(1)
+        .then((r) => r[0]);
+
+      if (!registryRow) { res.status(404).json({ error: "skill_not_found" }); return; }
+
+      const updated = await db
+        .update(connectorToolRegistry)
+        .set({ enabled, pending: false })
+        .where(eq(connectorToolRegistry.id, registryRow.id))
+        .returning();
+
+      const skillPermissions = await skillProjection.projectSkillPermissions(companyId);
+
+      await logActivity(db, {
+        companyId,
+        actorType: "user",
+        actorId: req.actor.userId ?? "board",
+        action: enabled ? "connector.skill_enabled" : "connector.skill_disabled",
+        entityType: "connector_tool_registry",
+        entityId: registryRow.id,
+        details: { connectorId, skillId, skillPermissions },
+      });
+
+      res.json({ skillId, enabled, skillPermissions });
+    },
+  );
+
+  // LLG-4.3: ingest an A2A agent's structured skills (card.skills[]) into the
+  // connector_tool_registry. Triggered after a tenant enables an `a2a`/agent
+  // connector so its skills become per-tenant governable capabilities.
+  router.post(
+    "/companies/:companyId/connectors/:connectorId/ingest-skills",
+    async (req, res) => {
+      assertBoard(req);
+      const companyId = req.params.companyId as string;
+      const connectorId = req.params.connectorId as string;
+      assertCompanyAccess(req, companyId);
+
+      const { cardUrl } = req.body as { cardUrl?: string };
+
+      const connector = await db
+        .select()
+        .from(connectorsTable)
+        .where(eq(connectorsTable.id, connectorId))
+        .limit(1)
+        .then((r) => r[0]);
+
+      if (!connector) { res.status(404).json({ error: "connector_not_found" }); return; }
+
+      const tcRow = await db
+        .select()
+        .from(tenantConnectors)
+        .where(
+          and(
+            eq(tenantConnectors.tenantId, companyId),
+            eq(tenantConnectors.connectorId, connectorId),
+          ),
+        )
+        .limit(1)
+        .then((r) => r[0]);
+
+      if (!tcRow) { res.status(404).json({ error: "tenant_connector_not_found" }); return; }
+
+      const url = cardUrl ?? connector.endpointUrl ?? "";
+      const result = await cardIngestion.ingestSkills(
+        companyId,
+        connectorId,
+        url,
+        tcRow.namespace,
+      );
+
+      await logActivity(db, {
+        companyId,
+        actorType: "user",
+        actorId: req.actor.userId ?? "board",
+        action: result.success ? "connector.skills_ingested" : "connector.skills_ingestion_failed",
+        entityType: "tenant_connector",
+        entityId: tcRow.id,
+        details: { connectorId, ingestedSkillCount: result.ingestedSkillCount, error: result.error },
+      });
+
+      res.status(result.success ? 200 : 502).json(result);
+    },
+  );
 
   return router;
 }

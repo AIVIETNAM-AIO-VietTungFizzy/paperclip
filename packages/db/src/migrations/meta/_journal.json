@@ -708,6 +708,13 @@
       "when": 1781846400000,
       "tag": "0100_connector_tool_registry_governance",
       "breakpoints": true
+    },
+    {
+      "idx": 101,
+      "version": "7",
+      "when": 1781846400000,
+      "tag": "0101_connector_tool_registry_skill_columns",
+      "breakpoints": true
     }
   ]
 }
