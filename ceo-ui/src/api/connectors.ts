@@ -10,9 +10,20 @@ export interface Connector {
   authType: string | null;
   credentialSchema: unknown[];
   allowedPackages: string[];
+  capabilities: Record<string, unknown> | null;
   status: string;
+  lastTestedAt: string | null;
+  lastError: string | null;
   createdAt: string;
   updatedAt: string;
+}
+
+export interface SyncResult {
+  ok: boolean;
+  added?: string[];
+  removed?: string[];
+  tools?: { name: string; description?: string }[];
+  error?: string;
 }
 
 export interface TestEndpointResult {
@@ -34,4 +45,5 @@ export const connectorsApi = {
     authType: string | null;
     configuration: Record<string, unknown> | null;
   }) => api.post<TestEndpointResult>("/admin/connectors/test-endpoint", params),
+  sync: (id: string) => api.post<SyncResult>(`/admin/connectors/${id}/sync`, {}),
 };

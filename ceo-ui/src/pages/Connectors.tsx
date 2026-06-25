@@ -8,8 +8,9 @@ import {
   CheckCircle2,
   XCircle,
   AlertCircle,
+  RefreshCw,
 } from "lucide-react";
-import { connectorsApi, type Connector, type TestEndpointResult } from "../api/connectors";
+import { connectorsApi, type Connector, type TestEndpointResult, type SyncResult } from "../api/connectors";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
@@ -294,6 +295,13 @@ export function Connectors() {
     },
   });
 
+  const syncMutation = useMutation({
+    mutationFn: (id: string) => connectorsApi.sync(id),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["connectors"] });
+    },
+  });
+
   const connectors = connectorsQuery.data ?? [];
 
   function openNew() {
@@ -344,6 +352,7 @@ export function Connectors() {
                 <th className="px-2 py-2 text-left font-medium">Endpoint</th>
                 <th className="px-2 py-2 text-left font-medium">Auth</th>
                 <th className="px-2 py-2 text-left font-medium">Status</th>
+                <th className="px-2 py-2 text-left font-medium">Tested</th>
                 <th className="px-3 py-2"></th>
               </tr>
             </thead>
@@ -372,7 +381,33 @@ export function Connectors() {
                       {connector.status}
                     </span>
                   </td>
-                  <td className="px-3 py-2.5 text-right">
+                  <td className="px-2 py-2.5 text-xs text-muted-foreground">
+                    {connector.lastTestedAt
+                      ? new Date(connector.lastTestedAt).toLocaleDateString()
+                      : "never"}
+                    {connector.lastError && (
+                      <span className="ml-1 text-amber-600 dark:text-amber-400" title={connector.lastError}>
+                        <AlertCircle className="inline h-3 w-3" />
+                      </span>
+                    )}
+                  </td>
+                  <td className="px-3 py-2.5 text-right whitespace-nowrap">
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="mr-1"
+                      disabled={syncMutation.isPending && syncMutation.variables === connector.id}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        syncMutation.mutate(connector.id);
+                      }}
+                    >
+                      {syncMutation.isPending && syncMutation.variables === connector.id ? (
+                        <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                      ) : (
+                        <RefreshCw className="h-3.5 w-3.5" />
+                      )}
+                    </Button>
                     <Button
                       variant="ghost"
                       size="sm"
