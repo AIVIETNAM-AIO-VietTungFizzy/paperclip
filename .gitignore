@@ -17,6 +17,10 @@ data/
 tmp-*
 cli/tmp/
 
+# Python
+__pycache__/
+*.pyc
+
 # Scratch/seed scripts (but not scripts/ dir)
 check-*.mjs
 !.github/scripts/check-*.mjs
