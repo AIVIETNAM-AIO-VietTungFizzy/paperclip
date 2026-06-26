@@ -453,6 +453,7 @@ describe("connector-gateway allowlist + enforce", () => {
 
     const res = await request(app)
       .post("/connector/tools/call")
+      .set("X-Service-Token", "test-token")
       .send({
         tenant_id: "tenant-1",
         name: "gmail__send_email",

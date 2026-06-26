@@ -71,8 +71,12 @@ export function connectorHandshakeService(db: Db) {
                 namespacedName,
                 description: (tool.description as string | null) ?? null,
                 inputSchema: tool.inputSchema as Record<string, unknown> | null ?? null,
-                enabled: true,
-                pending: false,
+                // C3: newly discovered tools must be pending and disabled
+                // until an admin reviews them. The discover-then-govern
+                // workflow requires that a brand-new tool is NOT immediately
+                // dispatchable through enforce.
+                enabled: false,
+                pending: true,
                 riskClass: "connector",
                 approvalClass: "auto",
                 requiresApproval: false,
