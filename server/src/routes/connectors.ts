@@ -8,7 +8,56 @@ import { assertBoard, assertCompanyAccess } from "./authz.js";
 import { logActivity } from "../services/activity-log.js";
 import { connectorEntitlementService } from "../services/connector-entitlement.js";
 import { connectorHandshakeService } from "../services/connector-handshake.js";
+import { secretService } from "../services/secrets.js";
+import {
+  isSecretRef,
+  parseSecretRef,
+  credentialConfigPath,
+  CONNECTOR_GUARDRAIL_CONSUMER_ID,
+} from "../services/connector-guardrail.js";
 import { createConnectorSchema, updateConnectorSchema, enableConnectorSchema, updateTenantConnectorSchema, toggleConnectorToolSchema } from "@paperclipai/shared";
+
+interface SecretRefDescriptor {
+  secretId: string;
+  configPath: string;
+}
+
+function extractSecretRefs(
+  companyId: string,
+  tenantConnectorId: string,
+  credentialRefs: Record<string, string> | null,
+): SecretRefDescriptor[] {
+  if (!credentialRefs) return [];
+  const refs: SecretRefDescriptor[] = [];
+  for (const [key, value] of Object.entries(credentialRefs)) {
+    if (typeof value === "string" && isSecretRef(value)) {
+      refs.push({
+        secretId: parseSecretRef(value),
+        configPath: credentialConfigPath(tenantConnectorId, key),
+      });
+    }
+  }
+  return refs;
+}
+
+async function syncConnectorSecretBindings(
+  db: Db,
+  companyId: string,
+  tenantConnectorId: string,
+  credentialRefs: Record<string, string> | null,
+): Promise<void> {
+  const refs = extractSecretRefs(companyId, tenantConnectorId, credentialRefs);
+  if (refs.length === 0) return;
+  await secretService(db).syncSecretRefsForTarget(
+    companyId,
+    { targetType: "system", targetId: CONNECTOR_GUARDRAIL_CONSUMER_ID },
+    refs.map((r) => ({
+      secretId: r.secretId,
+      configPath: r.configPath,
+      versionSelector: "latest" as const,
+    })),
+  );
+}
 
 export function connectorRoutes(db: Db) {
   const router = Router();
@@ -255,6 +304,8 @@ export function connectorRoutes(db: Db) {
         })
         .returning();
 
+      await syncConnectorSecretBindings(db, companyId, tc.id, credentialValues);
+
       const result = await handshake.handshake(companyId, connectorId, endpointUrl, namespace);
 
       await logActivity(db, {
@@ -303,6 +354,10 @@ export function connectorRoutes(db: Db) {
         .set(patch)
         .where(eq(tenantConnectors.id, existing.id))
         .returning();
+
+      if (req.body.credentialValues) {
+        await syncConnectorSecretBindings(db, companyId, existing.id, req.body.credentialValues);
+      }
 
       res.json(updated[0]);
     },

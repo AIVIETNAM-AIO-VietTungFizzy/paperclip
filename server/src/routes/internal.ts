@@ -6,6 +6,8 @@ import { connectors, tenantConnectors, connectorToolRegistry } from "@paperclipa
 import type { EntitlementStore } from "../services/entitlement-store.js";
 import { secretService } from "../services/secrets.js";
 import { connectorGuardrailService } from "../services/connector-guardrail.js";
+import { isCredentialResolutionError } from "../services/connector-guardrail.js";
+import { HttpError } from "../errors.js";
 
 function requireCpAuth(req: import("express").Request): void {
   const expectedToken = process.env.CP_SERVICE_TOKEN;
@@ -253,10 +255,26 @@ export function internalRoutes(
     }
 
     const { tenantId, connectorId } = req.params;
-    const secrets = secretService(db);
-    const guardrail = connectorGuardrailService(db, secrets);
-    const result = await guardrail.resolveConnectorCredentials(tenantId, connectorId);
-    res.json(result);
+
+    try {
+      const secrets = secretService(db);
+      const guardrail = connectorGuardrailService(db, secrets);
+      const result = await guardrail.resolveConnectorCredentials(tenantId, connectorId);
+      res.set("Cache-Control", "no-store, max-age=0");
+      res.set("Surrogate-Control", "no-store");
+      res.json(result);
+    } catch (err: unknown) {
+      const mapped = isCredentialResolutionError(err);
+      if (mapped) {
+        res.status(mapped.status).json({ error: "credential_resolution_failed" });
+        return;
+      }
+      if (err instanceof HttpError) {
+        res.status(err.status >= 400 && err.status < 500 ? err.status : 500).json({ error: "credential_resolution_failed" });
+        return;
+      }
+      res.status(500).json({ error: "credential_resolution_failed" });
+    }
   });
 
   return router;

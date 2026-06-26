@@ -1,6 +1,7 @@
 import express from "express";
 import request from "supertest";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { unprocessable } from "../errors.js";
 
 const mockDb = vi.hoisted(() => ({
   select: vi.fn(),
@@ -17,6 +18,11 @@ const mockLogActivity = vi.hoisted(() => vi.fn());
 
 const mockCanEnableConnector = vi.hoisted(() => vi.fn().mockResolvedValue({ allowed: true }));
 const mockHandshake = vi.hoisted(() => vi.fn().mockResolvedValue({ success: true }));
+
+const mockSyncSecretRefsForTarget = vi.hoisted(() => vi.fn().mockResolvedValue([]));
+const mockSecretService = vi.hoisted(() => vi.fn(() => ({
+  syncSecretRefsForTarget: mockSyncSecretRefsForTarget,
+})));
 
 const mockMCPClient = vi.hoisted(() => {
   const mockClient = {
@@ -60,6 +66,10 @@ vi.mock("../services/connector-handshake.js", () => ({
   connectorHandshakeService: vi.fn(() => ({
     handshake: mockHandshake,
   })),
+}));
+
+vi.mock("../services/secrets.js", () => ({
+  secretService: mockSecretService,
 }));
 
 vi.mock("../services/activity-log.js", () => ({
@@ -365,6 +375,65 @@ describe("connector routes", () => {
       const insertCallArgs = (insertChain.values as ReturnType<typeof vi.fn>).mock.calls[0][0];
       expect(insertCallArgs.credentialRefs).toEqual({ apiKey: "my-secret-key", headerName: "X-API-Key" });
     });
+
+    it("syncs secret bindings for secret:<uuid> refs on enable with tcId-scoped configPath", async () => {
+      const connector = { id: "c1", connectorKey: "deerflow", connectorName: "DeerFlow", status: "active", endpointUrl: "http://example.com/mcp" };
+      const tc = { id: "tc1", tenantId: "company1", connectorId: "c1", status: "enabled" };
+
+      setupSelectSequence([[connector]]);
+      setupInsert([tc]);
+      mockSyncSecretRefsForTarget.mockClear();
+
+      const app = createApp({ companyIds: ["company1"] });
+      const res = await request(app)
+        .post("/api/companies/company1/connectors/c1/enable")
+        .send({
+          namespace: "deerflow",
+          credentialValues: { apiKey: "secret:11111111-2222-3333-4444-555555555555", headerName: "X-Custom" },
+        });
+
+      expect(res.status).toBe(200);
+      expect(mockSyncSecretRefsForTarget).toHaveBeenCalledTimes(1);
+      const [companyId, target, refs] = (mockSyncSecretRefsForTarget.mock.calls[0] as any[]);
+      expect(companyId).toBe("company1");
+      expect(target).toEqual({ targetType: "system", targetId: "connector-guardrail" });
+      expect(refs).toEqual([
+        { secretId: "11111111-2222-3333-4444-555555555555", configPath: "tenantConnectors.tc1.credentialRefs.apiKey", versionSelector: "latest" },
+      ]);
+    });
+
+    it("does NOT call syncSecretRefsForTarget when credentialValues has only plain values", async () => {
+      const connector = { id: "c1", connectorKey: "deerflow", connectorName: "DeerFlow", status: "active", endpointUrl: "http://example.com/mcp" };
+      const tc = { id: "tc1", tenantId: "company1", connectorId: "c1", status: "enabled" };
+
+      setupSelectSequence([[connector]]);
+      setupInsert([tc]);
+      mockSyncSecretRefsForTarget.mockClear();
+
+      const app = createApp({ companyIds: ["company1"] });
+      const res = await request(app)
+        .post("/api/companies/company1/connectors/c1/enable")
+        .send({ namespace: "deerflow", credentialValues: { apiKey: "plain-key" } });
+
+      expect(res.status).toBe(200);
+      expect(mockSyncSecretRefsForTarget).not.toHaveBeenCalled();
+    });
+
+    it("rejects enable with a malformed secret:<uuid> ref (not a uuid)", async () => {
+      const connector = { id: "c1", connectorKey: "deerflow", connectorName: "DeerFlow", status: "active", endpointUrl: "http://example.com/mcp" };
+
+      setupSelectSequence([[connector]]);
+      mockSyncSecretRefsForTarget.mockClear();
+
+      const app = createApp({ companyIds: ["company1"] });
+      const res = await request(app)
+        .post("/api/companies/company1/connectors/c1/enable")
+        .send({ namespace: "deerflow", credentialValues: { apiKey: "secret:not-a-uuid" } });
+
+      expect(res.status).toBe(400);
+      expect(JSON.stringify(res.body)).toMatch(/secret/i);
+      expect(mockSyncSecretRefsForTarget).not.toHaveBeenCalled();
+    });
   });
 
   describe("POST /api/connectors/test-endpoint", () => {
@@ -487,6 +556,64 @@ describe("connector routes", () => {
       expect(res.status).toBe(200);
       const setCallArgs = (updateChain.set as ReturnType<typeof vi.fn>).mock.calls[0][0];
       expect(setCallArgs.credentialRefs).toEqual({ apiKey: "new-key" });
+    });
+
+    it("syncs secret bindings for secret:<uuid> refs on PATCH with tcId-scoped configPath", async () => {
+      const existing = { id: "tc1", tenantId: "company1", connectorId: "c1", status: "enabled", credentialRefs: {} };
+      const updated = { ...existing, credentialRefs: { apiKey: "secret:22222222-3333-4444-5555-666666666666" } };
+
+      setupSelectSequence([[existing]]);
+      setupUpdate([updated]);
+      mockSyncSecretRefsForTarget.mockClear();
+
+      const app = createApp({ companyIds: ["company1"] });
+      const res = await request(app)
+        .patch("/api/companies/company1/connectors/c1")
+        .send({ credentialValues: { apiKey: "secret:22222222-3333-4444-5555-666666666666" } });
+
+      expect(res.status).toBe(200);
+      expect(mockSyncSecretRefsForTarget).toHaveBeenCalledTimes(1);
+      const [companyId, target, refs] = (mockSyncSecretRefsForTarget.mock.calls[0] as any[]);
+      expect(companyId).toBe("company1");
+      expect(target).toEqual({ targetType: "system", targetId: "connector-guardrail" });
+      expect(refs).toEqual([
+        { secretId: "22222222-3333-4444-5555-666666666666", configPath: "tenantConnectors.tc1.credentialRefs.apiKey", versionSelector: "latest" },
+      ]);
+    });
+
+    it("does NOT call syncSecretRefsForTarget on PATCH with only plain values", async () => {
+      const existing = { id: "tc1", tenantId: "company1", connectorId: "c1", status: "enabled", credentialRefs: {} };
+      const updated = { ...existing, credentialRefs: { apiKey: "plain" } };
+
+      setupSelectSequence([[existing]]);
+      setupUpdate([updated]);
+      mockSyncSecretRefsForTarget.mockClear();
+
+      const app = createApp({ companyIds: ["company1"] });
+      const res = await request(app)
+        .patch("/api/companies/company1/connectors/c1")
+        .send({ credentialValues: { apiKey: "plain" } });
+
+      expect(res.status).toBe(200);
+      expect(mockSyncSecretRefsForTarget).not.toHaveBeenCalled();
+    });
+
+    it("returns 422 when syncSecretRefsForTarget rejects for a foreign (cross-tenant) secret ref on enable", async () => {
+      const connector = { id: "c1", connectorKey: "deerflow", connectorName: "DeerFlow", status: "active", endpointUrl: "http://example.com/mcp" };
+      const tc = { id: "tc1", tenantId: "company1", connectorId: "c1", status: "enabled" };
+
+      setupSelectSequence([[connector]]);
+      setupInsert([tc]);
+      mockSyncSecretRefsForTarget.mockClear();
+      mockSyncSecretRefsForTarget.mockRejectedValueOnce(unprocessable("Secret must belong to same company"));
+
+      const app = createApp({ companyIds: ["company1"] });
+      const res = await request(app)
+        .post("/api/companies/company1/connectors/c1/enable")
+        .send({ namespace: "deerflow", credentialValues: { apiKey: "secret:33333333-4444-5555-6666-777777777777" } });
+
+      expect(res.status).toBe(422);
+      expect(mockSyncSecretRefsForTarget).toHaveBeenCalledTimes(1);
     });
 
     it("returns 404 for unknown tenant connector", async () => {

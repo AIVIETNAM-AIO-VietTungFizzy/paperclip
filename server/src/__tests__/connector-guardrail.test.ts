@@ -49,6 +49,7 @@ describe("connectorGuardrailService", () => {
 
     it("returns empty headers when credentialRefs is empty", async () => {
       setupGuardrailSelect({
+        id: "tc-1",
         credentialRefs: {},
         authType: "apikey",
         credentialSchema: [],
@@ -64,6 +65,7 @@ describe("connectorGuardrailService", () => {
 
     it("returns empty headers when authType is none", async () => {
       setupGuardrailSelect({
+        id: "tc-1",
         credentialRefs: { apiKey: "plain-key-123" },
         authType: "none",
         credentialSchema: [],
@@ -79,6 +81,7 @@ describe("connectorGuardrailService", () => {
 
     it("builds apikey auth from plain-text credentialRefs", async () => {
       setupGuardrailSelect({
+        id: "tc-1",
         credentialRefs: { apiKey: "my-key", headerName: "X-Custom-Key" },
         authType: "apikey",
         credentialSchema: [],
@@ -93,6 +96,7 @@ describe("connectorGuardrailService", () => {
 
     it("builds apikey auth with default header name", async () => {
       setupGuardrailSelect({
+        id: "tc-1",
         credentialRefs: { apiKey: "my-key" },
         authType: "apikey",
         credentialSchema: [],
@@ -107,6 +111,7 @@ describe("connectorGuardrailService", () => {
 
     it("builds bearer auth from plain-text credentialRefs", async () => {
       setupGuardrailSelect({
+        id: "tc-1",
         credentialRefs: { token: "my-token" },
         authType: "bearer",
         credentialSchema: [],
@@ -121,6 +126,7 @@ describe("connectorGuardrailService", () => {
 
     it("builds basic auth from plain-text credentialRefs", async () => {
       setupGuardrailSelect({
+        id: "tc-1",
         credentialRefs: { username: "alice", password: "secret" },
         authType: "basic",
         credentialSchema: [],
@@ -133,14 +139,14 @@ describe("connectorGuardrailService", () => {
       expect(result).toEqual({ headers: { Authorization: "Basic YWxpY2U6c2VjcmV0" } });
     });
 
-    it("resolves secret:<uuid> refs via secrets service", async () => {
+    it("resolves secret:<uuid> refs via secrets service with row.id-scoped configPath", async () => {
       mockResolveSecretValue.mockImplementation((_companyId, secretId, _version, _context) => {
         if (secretId === "secret-uuid-1") return Promise.resolve("resolved-api-key");
-        if (secretId === "secret-uuid-2") return Promise.resolve("resolved-header");
         return Promise.reject(new Error("unexpected"));
       });
 
       setupGuardrailSelect({
+        id: "tc-42",
         credentialRefs: { apiKey: "secret:secret-uuid-1", headerName: "X-API-Key" },
         authType: "apikey",
         credentialSchema: [],
@@ -153,7 +159,12 @@ describe("connectorGuardrailService", () => {
       expect(result).toEqual({ headers: { "X-API-Key": "resolved-api-key" } });
       expect(mockResolveSecretValue).toHaveBeenCalledTimes(1);
       expect(mockResolveSecretValue).toHaveBeenCalledWith(
-        "tenant-1", "secret-uuid-1", "latest", expect.objectContaining({ consumerType: "system" }),
+        "tenant-1", "secret-uuid-1", "latest",
+        {
+          consumerType: "system",
+          consumerId: "connector-guardrail",
+          configPath: "tenantConnectors.tc-42.credentialRefs.apiKey",
+        },
       );
     });
 
@@ -161,6 +172,7 @@ describe("connectorGuardrailService", () => {
       mockResolveSecretValue.mockResolvedValue("decrypted-token");
 
       setupGuardrailSelect({
+        id: "tc-7",
         credentialRefs: { token: "secret:token-uuid", headerName: "X-Auth" },
         authType: "bearer",
         credentialSchema: [],
@@ -171,15 +183,21 @@ describe("connectorGuardrailService", () => {
       const result = await guardrail.resolveConnectorCredentials("tenant-1", "conn-1");
 
       expect(result).toEqual({ headers: { Authorization: "Bearer decrypted-token" } });
+      expect(mockResolveSecretValue).toHaveBeenCalledWith(
+        "tenant-1", "token-uuid", "latest",
+        expect.objectContaining({ configPath: "tenantConnectors.tc-7.credentialRefs.token" }),
+      );
     });
 
     it("returns different headers for different tenants (same connector)", async () => {
       const tenantARow = {
+        id: "tc-a",
         credentialRefs: { token: "tenant-a-token" },
         authType: "bearer",
         credentialSchema: [],
       };
       const tenantBRow = {
+        id: "tc-b",
         credentialRefs: { token: "tenant-b-token" },
         authType: "bearer",
         credentialSchema: [],
@@ -200,8 +218,49 @@ describe("connectorGuardrailService", () => {
       expect(resultA).not.toEqual(resultB);
     });
 
+    it("returns different secrets for two connectors in the SAME tenant sharing a credentialRefs key (no collision)", async () => {
+      const resolveByConfigPath = vi.fn((_companyId, _secretId, _version, context) => {
+        if (context?.configPath === "tenantConnectors.tc-x.credentialRefs.apiKey") {
+          return Promise.resolve("secret-for-conn-x");
+        }
+        if (context?.configPath === "tenantConnectors.tc-y.credentialRefs.apiKey") {
+          return Promise.resolve("secret-for-conn-y");
+        }
+        return Promise.reject(new Error(`unexpected configPath ${context?.configPath}`));
+      });
+      mockResolveSecretValue.mockImplementation(resolveByConfigPath);
+
+      const connXRow = {
+        id: "tc-x",
+        credentialRefs: { apiKey: "secret:secret-x" },
+        authType: "apikey",
+        credentialSchema: [],
+      };
+      const connYRow = {
+        id: "tc-y",
+        credentialRefs: { apiKey: "secret:secret-y" },
+        authType: "apikey",
+        credentialSchema: [],
+      };
+
+      mockDb.select
+        .mockReturnValueOnce(makeSingleRowChain(connXRow))
+        .mockReturnValueOnce(makeSingleRowChain(connYRow));
+
+      const { connectorGuardrailService } = await import("../services/connector-guardrail.js");
+      const guardrail = connectorGuardrailService(mockDb as any, { resolveSecretValue: mockResolveSecretValue } as any);
+
+      const resultX = await guardrail.resolveConnectorCredentials("tenant-1", "conn-x");
+      const resultY = await guardrail.resolveConnectorCredentials("tenant-1", "conn-y");
+
+      expect(resultX).toEqual({ headers: { "X-API-Key": "secret-for-conn-x" } });
+      expect(resultY).toEqual({ headers: { "X-API-Key": "secret-for-conn-y" } });
+      expect(resultX).not.toEqual(resultY);
+    });
+
     it("returns empty headers for unsupported auth type", async () => {
       setupGuardrailSelect({
+        id: "tc-1",
         credentialRefs: { apiKey: "key" },
         authType: "unknown_type",
         credentialSchema: [],
@@ -216,7 +275,7 @@ describe("connectorGuardrailService", () => {
   });
 
   describe("resolveConnectorCredentialsByNamespace", () => {
-    it("resolves credentials by namespace", async () => {
+    it("resolves credentials by namespace with row.id-scoped configPath", async () => {
       mockResolveSecretValue.mockResolvedValue("api-key-from-namespace");
 
       const chain: any = {
@@ -225,6 +284,7 @@ describe("connectorGuardrailService", () => {
         where: vi.fn().mockReturnThis(),
         limit: vi.fn().mockReturnThis(),
         then: vi.fn((fn: any) => Promise.resolve(fn([{
+          id: "tc-ns-1",
           credentialRefs: { apiKey: "secret:key-uuid" },
           authType: "apikey",
           credentialSchema: [],
@@ -237,6 +297,10 @@ describe("connectorGuardrailService", () => {
       const result = await guardrail.resolveConnectorCredentialsByNamespace("tenant-1", "gmail");
 
       expect(result).toEqual({ headers: { "X-API-Key": "api-key-from-namespace" } });
+      expect(mockResolveSecretValue).toHaveBeenCalledWith(
+        "tenant-1", "key-uuid", "latest",
+        expect.objectContaining({ configPath: "tenantConnectors.tc-ns-1.credentialRefs.apiKey" }),
+      );
     });
 
     it("returns empty headers when namespace not found", async () => {

@@ -1,6 +1,7 @@
 import { eq, and } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { tenantConnectors, connectors } from "@paperclipai/db";
+import { HttpError, unprocessable } from "../errors.js";
 
 const SECRET_REF_PREFIX = "secret:";
 
@@ -33,6 +34,9 @@ function buildAuthHeaders(
         Authorization: `Basic ${Buffer.from(`${username}:${password}`).toString("base64")}`,
       };
     }
+    if (username ?? password) {
+      throw unprocessable("Incomplete basic-auth credentials");
+    }
   }
 
   return {};
@@ -53,6 +57,12 @@ interface SecretService {
 
 export type ConnectorGuardrailService = ReturnType<typeof connectorGuardrailService>;
 
+const CONNECTOR_GUARDRAIL_CONSUMER_ID = "connector-guardrail";
+
+function credentialConfigPath(tenantConnectorId: string, key: string): string {
+  return `tenantConnectors.${tenantConnectorId}.credentialRefs.${key}`;
+}
+
 export function connectorGuardrailService(
   db: Db,
   secretService: SecretService,
@@ -66,7 +76,7 @@ export function connectorGuardrailService(
       const secretId = parseSecretRef(ref);
       return secretService.resolveSecretValue(tenantId, secretId, "latest", {
         consumerType: "system",
-        consumerId: "connector-guardrail",
+        consumerId: CONNECTOR_GUARDRAIL_CONSUMER_ID,
         configPath,
       });
     }
@@ -79,6 +89,7 @@ export function connectorGuardrailService(
   ): Promise<{ headers: Record<string, string> }> {
     const row = await db
       .select({
+        id: tenantConnectors.id,
         credentialRefs: tenantConnectors.credentialRefs,
         authType: connectors.authType,
         credentialSchema: connectors.credentialSchema,
@@ -100,12 +111,18 @@ export function connectorGuardrailService(
     const refs = row.credentialRefs ?? {};
     if (Object.keys(refs).length === 0) return { headers: {} };
 
-    const resolved: Record<string, string> = {};
-    for (const [key, ref] of Object.entries(refs)) {
-      resolved[key] = await resolveCredentialRef(ref, tenantId, `credentialRefs.${key}`);
-    }
+    const tenantConnectorId = row.id;
+    const entries = Object.entries(refs);
+    const resolved = await Promise.all(
+      entries.map(async ([key, ref]) => [
+        key,
+        await resolveCredentialRef(ref, tenantId, credentialConfigPath(tenantConnectorId, key)),
+      ] as const),
+    );
+    const resolvedConfig: Record<string, string> = {};
+    for (const [key, value] of resolved) resolvedConfig[key] = value;
 
-    const headers = buildAuthHeaders(row.authType, resolved);
+    const headers = buildAuthHeaders(row.authType, resolvedConfig);
     return { headers };
   }
 
@@ -115,6 +132,7 @@ export function connectorGuardrailService(
   ): Promise<{ headers: Record<string, string> }> {
     const row = await db
       .select({
+        id: tenantConnectors.id,
         credentialRefs: tenantConnectors.credentialRefs,
         authType: connectors.authType,
         credentialSchema: connectors.credentialSchema,
@@ -136,12 +154,18 @@ export function connectorGuardrailService(
     const refs = row.credentialRefs ?? {};
     if (Object.keys(refs).length === 0) return { headers: {} };
 
-    const resolved: Record<string, string> = {};
-    for (const [key, ref] of Object.entries(refs)) {
-      resolved[key] = await resolveCredentialRef(ref, tenantId, `credentialRefs.${key}`);
-    }
+    const tenantConnectorId = row.id;
+    const entries = Object.entries(refs);
+    const resolved = await Promise.all(
+      entries.map(async ([key, ref]) => [
+        key,
+        await resolveCredentialRef(ref, tenantId, credentialConfigPath(tenantConnectorId, key)),
+      ] as const),
+    );
+    const resolvedConfig: Record<string, string> = {};
+    for (const [key, value] of resolved) resolvedConfig[key] = value;
 
-    const headers = buildAuthHeaders(row.authType, resolved);
+    const headers = buildAuthHeaders(row.authType, resolvedConfig);
     return { headers };
   }
 
@@ -149,4 +173,13 @@ export function connectorGuardrailService(
     resolveConnectorCredentials,
     resolveConnectorCredentialsByNamespace,
   };
+}
+
+export { isSecretRef, parseSecretRef, credentialConfigPath, CONNECTOR_GUARDRAIL_CONSUMER_ID };
+
+export function isCredentialResolutionError(err: unknown): { status: number } | null {
+  if (err instanceof HttpError) {
+    if (err.status === 422 || err.status === 404) return { status: err.status };
+  }
+  return null;
 }

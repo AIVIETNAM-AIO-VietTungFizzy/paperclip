@@ -223,6 +223,30 @@ describe("enableConnectorSchema", () => {
 
     expect(parsed.success).toBe(false);
   });
+
+  it("accepts a well-formed secret:<uuid> ref in credentialValues", () => {
+    const parsed = enableConnectorSchema.parse({
+      credentialValues: { apiKey: "secret:11111111-2222-3333-4444-555555555555" },
+    });
+
+    expect(parsed.credentialValues!.apiKey).toBe("secret:11111111-2222-3333-4444-555555555555");
+  });
+
+  it("rejects a malformed secret: ref (not a uuid) in credentialValues", () => {
+    const parsed = enableConnectorSchema.safeParse({
+      credentialValues: { apiKey: "secret:not-a-uuid" },
+    });
+
+    expect(parsed.success).toBe(false);
+  });
+
+  it("rejects an empty credential value", () => {
+    const parsed = enableConnectorSchema.safeParse({
+      credentialValues: { apiKey: "" },
+    });
+
+    expect(parsed.success).toBe(false);
+  });
 });
 
 describe("updateTenantConnectorSchema", () => {

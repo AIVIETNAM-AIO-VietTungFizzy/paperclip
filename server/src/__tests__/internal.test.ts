@@ -3,6 +3,7 @@ import express from "express";
 import request from "supertest";
 import { internalRoutes } from "../routes/internal.js";
 import { createEntitlementStore } from "../services/entitlement-store.js";
+import { unprocessable, notFound } from "../errors.js";
 
 const ORIGINAL_CP_SERVICE_TOKEN = process.env.CP_SERVICE_TOKEN;
 
@@ -485,9 +486,8 @@ describe("GET /api/runtime/internal/tenants/:tenantId/connectors/:connectorId/cr
   });
 
   function buildGuardrailMockDb(row: unknown) {
-    const resolvedValue = Promise.resolve(row ? [row] : []);
     const limitChain = {
-      limit: vi.fn(() => resolvedValue),
+      limit: vi.fn(() => Promise.resolve(row ? [row] : [])),
     };
     const whereChain = {
       where: vi.fn(() => limitChain),
@@ -535,6 +535,7 @@ describe("GET /api/runtime/internal/tenants/:tenantId/connectors/:connectorId/cr
 
   it("returns resolved credential headers for enabled connector", async () => {
     const mockRow = {
+      id: "tc-1",
       credentialRefs: { apiKey: "my-secret-key", headerName: "X-API-Key" },
       authType: "apikey",
       credentialSchema: [],
@@ -550,23 +551,120 @@ describe("GET /api/runtime/internal/tenants/:tenantId/connectors/:connectorId/cr
     expect(res.body).toEqual({ headers: { "X-API-Key": "my-secret-key" } });
   });
 
-  it("returns bearer token headers", async () => {
-    const mockRow = {
-      credentialRefs: { token: "my-bearer-token" },
-      authType: "bearer",
-      credentialSchema: [],
-    };
-    const mockDb = buildGuardrailMockDb(mockRow);
-    const { app } = createApp(mockDb);
+    it("returns bearer token headers", async () => {
+      const mockRow = {
+        id: "tc-1",
+        credentialRefs: { token: "my-bearer-token" },
+        authType: "bearer",
+        credentialSchema: [],
+      };
+      const mockDb = buildGuardrailMockDb(mockRow);
+      const { app } = createApp(mockDb);
 
-    const res = await request(app)
-      .get("/api/runtime/internal/tenants/tenant-1/connectors/conn-1/credential-headers")
-      .set("Authorization", "Bearer test-cp-token");
+      const res = await request(app)
+        .get("/api/runtime/internal/tenants/tenant-1/connectors/conn-1/credential-headers")
+        .set("Authorization", "Bearer test-cp-token");
 
-    expect(res.status).toBe(200);
-    expect(res.body).toEqual({ headers: { Authorization: "Bearer my-bearer-token" } });
+      expect(res.status).toBe(200);
+      expect(res.body).toEqual({ headers: { Authorization: "Bearer my-bearer-token" } });
+    });
+
+    it("sets Cache-Control: no-store and Surrogate-Control: no-store on credential headers", async () => {
+      const mockRow = {
+        id: "tc-1",
+        credentialRefs: { apiKey: "k" },
+        authType: "apikey",
+        credentialSchema: [],
+      };
+      const mockDb = buildGuardrailMockDb(mockRow);
+      const { app } = createApp(mockDb);
+
+      const res = await request(app)
+        .get("/api/runtime/internal/tenants/tenant-1/connectors/conn-1/credential-headers")
+        .set("Authorization", "Bearer test-cp-token");
+
+      expect(res.status).toBe(200);
+      expect(res.headers["cache-control"]).toBe("no-store, max-age=0");
+      expect(res.headers["surrogate-control"]).toBe("no-store");
+    });
+
+    it("maps a binding_missing error (422) to a generic message without leaking secretId/configPath", async () => {
+      const mockRow = {
+        id: "tc-1",
+        credentialRefs: { apiKey: "secret:secret-uuid-1" },
+        authType: "apikey",
+        credentialSchema: [],
+      };
+      const mockDb = buildGuardrailMockDb(mockRow);
+
+      const original = await import("../services/connector-guardrail.js");
+      vi.spyOn(original, "connectorGuardrailService").mockImplementationOnce(() => ({
+        resolveConnectorCredentials: vi.fn().mockRejectedValue(
+          unprocessable("Secret is not bound to system:connector-guardrail at tenantConnectors.tc-1.credentialRefs.apiKey (secretId=secret-uuid-1)"),
+        ),
+        resolveConnectorCredentialsByNamespace: vi.fn(),
+      }) as any);
+
+      const { app } = createApp(mockDb);
+      const res = await request(app)
+        .get("/api/runtime/internal/tenants/tenant-1/connectors/conn-1/credential-headers")
+        .set("Authorization", "Bearer test-cp-token");
+
+      expect(res.status).toBe(422);
+      expect(res.body).toEqual({ error: "credential_resolution_failed" });
+      expect(JSON.stringify(res.body)).not.toMatch(/secret-uuid-1|configPath|tenantConnectors/);
+    });
+
+    it("maps a not_found error (404) to a generic message without leaking secretId", async () => {
+      const mockRow = {
+        id: "tc-1",
+        credentialRefs: { apiKey: "secret:secret-uuid-1" },
+        authType: "apikey",
+        credentialSchema: [],
+      };
+      const mockDb = buildGuardrailMockDb(mockRow);
+
+      const original = await import("../services/connector-guardrail.js");
+      vi.spyOn(original, "connectorGuardrailService").mockImplementationOnce(() => ({
+        resolveConnectorCredentials: vi.fn().mockRejectedValue(notFound("Secret not found secretId=secret-uuid-1")),
+        resolveConnectorCredentialsByNamespace: vi.fn(),
+      }) as any);
+
+      const { app } = createApp(mockDb);
+      const res = await request(app)
+        .get("/api/runtime/internal/tenants/tenant-1/connectors/conn-1/credential-headers")
+        .set("Authorization", "Bearer test-cp-token");
+
+      expect(res.status).toBe(404);
+      expect(res.body).toEqual({ error: "credential_resolution_failed" });
+      expect(JSON.stringify(res.body)).not.toMatch(/secret-uuid-1/);
+    });
+
+    it("maps a generic resolve error to 500 with a generic message (no leak)", async () => {
+      const mockRow = {
+        id: "tc-1",
+        credentialRefs: { apiKey: "secret:secret-uuid-1" },
+        authType: "apikey",
+        credentialSchema: [],
+      };
+      const mockDb = buildGuardrailMockDb(mockRow);
+
+      const original = await import("../services/connector-guardrail.js");
+      vi.spyOn(original, "connectorGuardrailService").mockImplementationOnce(() => ({
+        resolveConnectorCredentials: vi.fn().mockRejectedValue(new Error("boom secretId=secret-uuid-1 path=credentialRefs.apiKey")),
+        resolveConnectorCredentialsByNamespace: vi.fn(),
+      }) as any);
+
+      const { app } = createApp(mockDb);
+      const res = await request(app)
+        .get("/api/runtime/internal/tenants/tenant-1/connectors/conn-1/credential-headers")
+        .set("Authorization", "Bearer test-cp-token");
+
+      expect(res.status).toBe(500);
+      expect(res.body).toEqual({ error: "credential_resolution_failed" });
+      expect(JSON.stringify(res.body)).not.toMatch(/secret-uuid-1|credentialRefs/);
+    });
   });
-});
 
 function buildMockDb(connectorsResult: Array<{ id: string; allowedPackages: string[] }>) {
   const whereMock = vi.fn().mockReturnThis();
