@@ -171,4 +171,46 @@ describe("agentCardIngestionService", () => {
     // (toolType='tool') is promoted to a skill row instead of staying stale.
     expect(conflictArg.set.toolType).toBe("skill");
   });
+
+  it("promotes a colliding MCP-tool row to a skill row on re-ingestion (LLG-4.3 I1: intentional overwrite)", async () => {
+    // The unique index is (tenant_connector_id, tool_name) with no tool_type.
+    // When a skill `id` collides with an existing MCP-tool `name` on the same
+    // tenant connector, ingestion's onConflictDoUpdate must promote that row
+    // to tool_type='skill' (refreshing skill metadata) rather than leaving a
+    // stale tool_type='tool' row that the skill projection would silently drop.
+    // This test documents that the collision-promotion is intentional and
+    // asserted, per the LLG-4.3 review verdict (I1).
+    mockFetchAgentCard.mockResolvedValue({
+      name: "agent", description: "d",
+      skills: [{ id: "send_email", name: "Send Email Skill", description: "skill desc", tags: ["mail"] }],
+    });
+
+    const tcRow = { id: "tc-1", tenantId: "tenant-1", connectorId: "conn-1", namespace: "gmail" };
+    mockDb.select.mockReturnValue(makeSelectChain([tcRow]));
+
+    const insertChain = makeInsertChain();
+    mockDb.insert.mockReturnValue(insertChain);
+
+    await ingestion.ingestSkills("tenant-1", "conn-1", "http://agent.example/.well-known/agent.json", "gmail");
+
+    expect(insertChain.onConflictDoUpdate).toHaveBeenCalledTimes(1);
+    const conflictArg = insertChain.onConflictDoUpdate.mock.calls[0][0] as {
+      target: unknown[];
+      set: Record<string, unknown>;
+    };
+    // The insert row itself is a skill row targeting the colliding toolName.
+    const insertRow = insertChain.values.mock.calls[0][0] as Record<string, unknown>;
+    expect(insertRow.toolName).toBe("send_email");
+    expect(insertRow.namespacedName).toBe("gmail__send_email");
+    expect(insertRow.toolType).toBe("skill");
+    // On conflict the row is promoted: toolType flips to "skill" and skill
+    // metadata is written. enabled/pending are untouched (board toggle, if any,
+    // survives the promotion).
+    expect(conflictArg.set.toolType).toBe("skill");
+    expect(conflictArg.set.skillName).toBe("Send Email Skill");
+    expect(conflictArg.set.skillDescription).toBe("skill desc");
+    expect(conflictArg.set.tags).toEqual(["mail"]);
+    expect(conflictArg.set).not.toHaveProperty("enabled");
+    expect(conflictArg.set).not.toHaveProperty("pending");
+  });
 });

@@ -142,6 +142,10 @@ export function internalRoutes(
     const tcIds = rows.map((r) => r.id);
     let toolRows: Array<{ tenantConnectorId: string; namespacedName: string; enabled: boolean; pending: boolean }> = [];
     if (tcIds.length > 0) {
+      // LLG-4.3 I2: only MCP-tool rows (tool_type='tool') belong on the gateway
+      // MCP-tool allowlist surfaced here. Promoted A2A skill rows (tool_type='skill')
+      // are projected via skill-permissions-projection.ts and must not double-count
+      // in enabledTools/pendingTools.
       toolRows = await db
         .select({
           tenantConnectorId: connectorToolRegistry.tenantConnectorId,
@@ -150,7 +154,12 @@ export function internalRoutes(
           pending: connectorToolRegistry.pending,
         })
         .from(connectorToolRegistry)
-        .where(inArray(connectorToolRegistry.tenantConnectorId, tcIds));
+        .where(
+          and(
+            inArray(connectorToolRegistry.tenantConnectorId, tcIds),
+            eq(connectorToolRegistry.toolType, "tool"),
+          ),
+        );
     }
 
     const toolsByTc = new Map<string, { enabled: string[]; pending: string[] }>();
@@ -228,6 +237,9 @@ export function internalRoutes(
         and(
           eq(connectorToolRegistry.tenantConnectorId, row.id),
           eq(connectorToolRegistry.enabled, true),
+          // LLG-4.3 I2: only MCP-tool rows belong in the gateway MCP-tool
+          // allowlist surfaced here; skill rows are projected separately.
+          eq(connectorToolRegistry.toolType, "tool"),
         ),
       );
 
