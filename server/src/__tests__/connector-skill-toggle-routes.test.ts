@@ -11,7 +11,26 @@ const mockDb = vi.hoisted(() => ({
 
 const mockConnectorsTable = vi.hoisted(() => ({}));
 const mockTenantConnectorsTable = vi.hoisted(() => ({}));
-const mockConnectorToolRegistryTable = vi.hoisted(() => ({}));
+const mockConnectorToolRegistryTable = vi.hoisted(() => ({
+  tenantConnectorId: Symbol("col.tenantConnectorId"),
+  tenantId: Symbol("col.tenantId"),
+  connectorId: Symbol("col.connectorId"),
+  toolName: Symbol("col.toolName"),
+  toolType: Symbol("col.toolType"),
+}));
+
+// Tagged predicate captures so tests can assert which column/value the route
+// filters on without depending on drizzle's internal SQL shape.
+const predCalls: Array<{ column: unknown; value: unknown }> = [];
+const andCalls: unknown[] = [];
+const mockEq = vi.hoisted(() => vi.fn((column: unknown, value: unknown) => {
+  predCalls.push({ column, value });
+  return { kind: "eq", column, value };
+}));
+const mockAnd = vi.hoisted(() => vi.fn((...args: unknown[]) => {
+  andCalls.push(args);
+  return { kind: "and", args };
+}));
 
 const mockLogActivity = vi.hoisted(() => vi.fn());
 const mockProjection = vi.hoisted(() => vi.fn().mockResolvedValue({}));
@@ -32,6 +51,8 @@ vi.mock("@paperclipai/db", () => ({
   tenantConnectors: mockTenantConnectorsTable,
   connectorToolRegistry: mockConnectorToolRegistryTable,
 }));
+
+vi.mock("drizzle-orm", () => ({ eq: mockEq, and: mockAnd }));
 
 vi.mock("../services/connector-entitlement.js", () => ({
   connectorEntitlementService: vi.fn(() => ({
@@ -192,5 +213,41 @@ describe("PATCH /api/companies/:companyId/connectors/:connectorId/skills/:skillI
       .send({ enabled: "yes" });
 
     expect(res.status).toBe(400);
+  });
+
+  it("filters the registry lookup by tool_type='skill' so MCP-tool rows cannot be toggled through the skills endpoint", async () => {
+    const tcRow = { id: "tc-1", tenantId: "company-1", connectorId: "conn-1", namespace: "research" };
+    predCalls.length = 0;
+    andCalls.length = 0;
+    setupSelectSequence([[tcRow], []]);
+
+    const app = createApp();
+    const res = await request(app)
+      .patch("/api/companies/company-1/connectors/conn-1/skills/search")
+      .send({ enabled: true });
+
+    expect(res.status).toBe(404);
+    expect(res.body).toEqual({ error: "skill_not_found" });
+
+    // The second and() group is the registry-row lookup; it must include a
+    // toolType='skill' predicate alongside the tenantConnectorId and toolName ones.
+    const registryAnd = andCalls[1] as unknown[];
+    expect(registryAnd).toBeDefined();
+    const predValues = registryAnd.map((p: any) => p.value);
+    expect(predValues).toContain("skill");
+    expect(predValues).toContain("search");
+  });
+
+  it("returns 404 skill_not_found when a row with a matching toolName exists but toolType='tool'", async () => {
+    const tcRow = { id: "tc-1", tenantId: "company-1", connectorId: "conn-1", namespace: "research" };
+    setupSelectSequence([[tcRow], []]);
+
+    const app = createApp();
+    const res = await request(app)
+      .patch("/api/companies/company-1/connectors/conn-1/skills/search")
+      .send({ enabled: true });
+
+    expect(res.status).toBe(404);
+    expect(res.body).toEqual({ error: "skill_not_found" });
   });
 });

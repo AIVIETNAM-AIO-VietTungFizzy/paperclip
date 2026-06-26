@@ -8,6 +8,7 @@ const mockTenantConnectorsTable = vi.hoisted(() => ({}));
 const mockConnectorToolRegistryTable = vi.hoisted(() => ({}));
 const mockLogActivity = vi.hoisted(() => vi.fn());
 const mockIngest = vi.hoisted(() => vi.fn());
+const mockResolveCredentialHeaders = vi.hoisted(() => vi.fn().mockResolvedValue({ headers: {} }));
 
 const mockMCPClient = vi.hoisted(() => ({ Client: vi.fn(function () { return { connect: vi.fn(), listTools: vi.fn(), close: vi.fn(), request: vi.fn() }; }) }));
 
@@ -19,6 +20,9 @@ vi.mock("../services/connector-handshake.js", () => ({ connectorHandshakeService
 vi.mock("../services/agent-card-ingestion.js", () => ({ agentCardIngestionService: vi.fn(() => ({ ingestSkills: mockIngest })) }));
 vi.mock("../services/skill-permissions-projection.js", () => ({ skillPermissionsProjectionService: vi.fn(() => ({ projectSkillPermissions: vi.fn().mockResolvedValue({}) })) }));
 vi.mock("../services/activity-log.js", () => ({ logActivity: mockLogActivity }));
+vi.mock("../services/connector-guardrail.js", () => ({
+  connectorGuardrailService: vi.fn(() => ({ resolveConnectorCredentials: mockResolveCredentialHeaders })),
+}));
 
 let connectorRoutes: typeof import("../routes/connectors.js").connectorRoutes;
 let errorHandler: typeof import("../middleware/index.js").errorHandler;
@@ -48,6 +52,8 @@ describe("POST /api/companies/:companyId/connectors/:connectorId/ingest-skills",
   beforeEach(async () => {
     vi.clearAllMocks();
     mockIngest.mockReset();
+    mockResolveCredentialHeaders.mockReset();
+    mockResolveCredentialHeaders.mockResolvedValue({ headers: {} });
     const [routes, middleware] = await Promise.all([import("../routes/connectors.js"), import("../middleware/index.js")]);
     connectorRoutes = routes.connectorRoutes;
     errorHandler = middleware.errorHandler;
@@ -65,7 +71,7 @@ describe("POST /api/companies/:companyId/connectors/:connectorId/ingest-skills",
 
     expect(res.status).toBe(200);
     expect(res.body).toEqual({ success: true, ingestedSkillCount: 3 });
-    expect(mockIngest).toHaveBeenCalledWith("company-1", "conn-1", "http://agent/.well-known/agent.json", "research");
+    expect(mockIngest).toHaveBeenCalledWith("company-1", "conn-1", "http://agent/.well-known/agent.json", "research", {});
   });
 
   it("uses cardUrl from the request body when provided", async () => {
@@ -78,7 +84,28 @@ describe("POST /api/companies/:companyId/connectors/:connectorId/ingest-skills",
     const res = await request(app).post("/api/companies/company-1/connectors/conn-1/ingest-skills").send({ cardUrl: "http://override/.well-known/agent.json" });
 
     expect(res.status).toBe(200);
-    expect(mockIngest).toHaveBeenCalledWith("company-1", "conn-1", "http://override/.well-known/agent.json", "research");
+    expect(mockIngest).toHaveBeenCalledWith("company-1", "conn-1", "http://override/.well-known/agent.json", "research", {});
+  });
+
+  it("resolves tenant credential refs and forwards them as credentialHeaders to ingestSkills", async () => {
+    const connector = { id: "conn-1", connectorKey: "research", endpointUrl: "http://agent/.well-known/agent.json" };
+    const tcRow = { id: "tc-1", tenantId: "company-1", connectorId: "conn-1", namespace: "research" };
+    setupSelectSequence([[connector], [tcRow]]);
+    mockResolveCredentialHeaders.mockResolvedValue({ headers: { Authorization: "Bearer secret-token" } });
+    mockIngest.mockResolvedValue({ success: true, ingestedSkillCount: 2 });
+
+    const app = createApp();
+    const res = await request(app).post("/api/companies/company-1/connectors/conn-1/ingest-skills").send({});
+
+    expect(res.status).toBe(200);
+    expect(mockResolveCredentialHeaders).toHaveBeenCalledWith("company-1", "conn-1");
+    expect(mockIngest).toHaveBeenCalledWith(
+      "company-1",
+      "conn-1",
+      "http://agent/.well-known/agent.json",
+      "research",
+      { Authorization: "Bearer secret-token" },
+    );
   });
 
   it("returns 404 when the connector does not exist", async () => {

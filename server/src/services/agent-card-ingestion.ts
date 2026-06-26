@@ -88,6 +88,11 @@ function skillToRegistryRow(
 
 function skillConflictSet(skill: AgentCardSkill) {
   return {
+    // LLG-4.3 review fix: re-assert toolType on conflict so a row that
+    // collided on (tenantConnectorId, toolName) — e.g. an MCP-tool row whose
+    // name matched a skill id — is promoted to a skill row instead of staying
+    // stale with tool_type='tool'.
+    toolType: "skill" as const,
     skillName: skill.name,
     skillDescription: skill.description ?? null,
     description: skill.description ?? null,

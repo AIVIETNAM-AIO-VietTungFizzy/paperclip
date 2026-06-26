@@ -10,6 +10,7 @@ import { connectorEntitlementService } from "../services/connector-entitlement.j
 import { connectorHandshakeService } from "../services/connector-handshake.js";
 import { agentCardIngestionService } from "../services/agent-card-ingestion.js";
 import { skillPermissionsProjectionService } from "../services/skill-permissions-projection.js";
+import { connectorGuardrailService } from "../services/connector-guardrail.js";
 import { createConnectorSchema, updateConnectorSchema, enableConnectorSchema, updateTenantConnectorSchema, toggleSkillSchema } from "@paperclipai/shared";
 
 export function connectorRoutes(db: Db) {
@@ -18,6 +19,7 @@ export function connectorRoutes(db: Db) {
   const handshake = connectorHandshakeService(db);
   const cardIngestion = agentCardIngestionService(db);
   const skillProjection = skillPermissionsProjectionService(db);
+  const guardrail = connectorGuardrailService(db);
 
   router.get("/connectors", async (_req, res) => {
     const all = await db.select().from(connectorsTable).orderBy(connectorsTable.connectorName);
@@ -388,6 +390,11 @@ export function connectorRoutes(db: Db) {
           and(
             eq(connectorToolRegistry.tenantConnectorId, tcRow.id),
             eq(connectorToolRegistry.toolName, skillId),
+            // LLG-4.3 review fix: only skill rows are toggleable through the
+            // skills endpoint. Without this predicate a board member could
+            // toggle an MCP-tool row (tool_type='tool') here, and a skill id
+            // colliding with an MCP tool name would share the row.
+            eq(connectorToolRegistry.toolType, "skill"),
           ),
         )
         .limit(1)
@@ -454,11 +461,15 @@ export function connectorRoutes(db: Db) {
       if (!tcRow) { res.status(404).json({ error: "tenant_connector_not_found" }); return; }
 
       const url = cardUrl ?? connector.endpointUrl ?? "";
+      // LLG-4.3 review fix (spec §8a point 3): resolve the tenant's credential
+      // refs so private Agent Cards behind securitySchemes can be ingested.
+      const { headers: credentialHeaders } = await guardrail.resolveConnectorCredentials(companyId, connectorId);
       const result = await cardIngestion.ingestSkills(
         companyId,
         connectorId,
         url,
         tcRow.namespace,
+        credentialHeaders,
       );
 
       await logActivity(db, {

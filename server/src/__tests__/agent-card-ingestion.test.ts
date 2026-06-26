@@ -151,6 +151,24 @@ describe("agentCardIngestionService", () => {
 
     await ingestion.ingestSkills("tenant-1", "conn-1", "http://agent.example/.well-known/agent.json", "agent");
 
-    expect(insertChain.onConflictDoUpdate).toHaveBeenCalled();
+    expect(insertChain.onConflictDoUpdate).toHaveBeenCalledTimes(1);
+    const conflictArg = insertChain.onConflictDoUpdate.mock.calls[0][0] as {
+      target: unknown[];
+      set: Record<string, unknown>;
+    };
+    expect(conflictArg.target).toEqual([mockConnectorToolRegistryTable.tenantConnectorId, mockConnectorToolRegistryTable.toolName]);
+    // set must refresh skill metadata …
+    expect(conflictArg.set.skillName).toBe("S");
+    expect(conflictArg.set.skillDescription).toBe("new desc");
+    expect(conflictArg.set.tags).toEqual(["t"]);
+    expect(conflictArg.set.description).toBe("new desc");
+    expect(conflictArg.set.inputModes).toEqual(["text"]);
+    expect(conflictArg.set.outputModes).toEqual(["text"]);
+    // … and must NOT touch enabled/pending (board toggle preserved).
+    expect(conflictArg.set).not.toHaveProperty("enabled");
+    expect(conflictArg.set).not.toHaveProperty("pending");
+    // toolType is re-asserted as "skill" on conflict so a colliding MCP-tool row
+    // (toolType='tool') is promoted to a skill row instead of staying stale.
+    expect(conflictArg.set.toolType).toBe("skill");
   });
 });
