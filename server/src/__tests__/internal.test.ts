@@ -469,6 +469,105 @@ describe("GET /api/runtime/internal/tenants/:tenantId/connector-by-namespace/:na
   });
 });
 
+describe("GET /api/runtime/internal/tenants/:tenantId/connectors/:connectorId/credential-headers", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    process.env.CP_SERVICE_TOKEN = "test-cp-token";
+  });
+
+  afterEach(() => {
+    if (ORIGINAL_CP_SERVICE_TOKEN === undefined) {
+      delete process.env.CP_SERVICE_TOKEN;
+    } else {
+      process.env.CP_SERVICE_TOKEN = ORIGINAL_CP_SERVICE_TOKEN;
+    }
+    vi.restoreAllMocks();
+  });
+
+  function buildGuardrailMockDb(row: unknown) {
+    const resolvedValue = Promise.resolve(row ? [row] : []);
+    const limitChain = {
+      limit: vi.fn(() => resolvedValue),
+    };
+    const whereChain = {
+      where: vi.fn(() => limitChain),
+    };
+    const innerJoinChain = {
+      innerJoin: vi.fn(() => whereChain),
+    };
+    const fromChain = {
+      from: vi.fn(() => innerJoinChain),
+    };
+    return {
+      select: vi.fn(() => fromChain),
+    };
+  }
+
+  it("returns 401 when no auth header is provided", async () => {
+    const { app } = createApp();
+    const res = await request(app)
+      .get("/api/runtime/internal/tenants/tenant-1/connectors/conn-1/credential-headers");
+
+    expect(res.status).toBe(401);
+    expect(res.body).toEqual({ error: "cp_service_token_required" });
+  });
+
+  it("returns 503 when no db is provided", async () => {
+    const { app } = createApp();
+    const res = await request(app)
+      .get("/api/runtime/internal/tenants/tenant-1/connectors/conn-1/credential-headers")
+      .set("Authorization", "Bearer test-cp-token");
+
+    expect(res.status).toBe(503);
+    expect(res.body).toEqual({ error: "database_not_available" });
+  });
+
+  it("returns empty headers when tenant connector is not enabled", async () => {
+    const mockDb = buildGuardrailMockDb(null);
+    const { app } = createApp(mockDb);
+    const res = await request(app)
+      .get("/api/runtime/internal/tenants/tenant-1/connectors/conn-1/credential-headers")
+      .set("Authorization", "Bearer test-cp-token");
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ headers: {} });
+  });
+
+  it("returns resolved credential headers for enabled connector", async () => {
+    const mockRow = {
+      credentialRefs: { apiKey: "my-secret-key", headerName: "X-API-Key" },
+      authType: "apikey",
+      credentialSchema: [],
+    };
+    const mockDb = buildGuardrailMockDb(mockRow);
+    const { app } = createApp(mockDb);
+
+    const res = await request(app)
+      .get("/api/runtime/internal/tenants/tenant-1/connectors/conn-1/credential-headers")
+      .set("Authorization", "Bearer test-cp-token");
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ headers: { "X-API-Key": "my-secret-key" } });
+  });
+
+  it("returns bearer token headers", async () => {
+    const mockRow = {
+      credentialRefs: { token: "my-bearer-token" },
+      authType: "bearer",
+      credentialSchema: [],
+    };
+    const mockDb = buildGuardrailMockDb(mockRow);
+    const { app } = createApp(mockDb);
+
+    const res = await request(app)
+      .get("/api/runtime/internal/tenants/tenant-1/connectors/conn-1/credential-headers")
+      .set("Authorization", "Bearer test-cp-token");
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ headers: { Authorization: "Bearer my-bearer-token" } });
+  });
+});
+
 function buildMockDb(connectorsResult: Array<{ id: string; allowedPackages: string[] }>) {
   const whereMock = vi.fn().mockReturnThis();
   const thenMock = vi.fn((resolve: (value: unknown) => void) => resolve(connectorsResult));

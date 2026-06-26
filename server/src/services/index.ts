@@ -72,6 +72,7 @@ export { workspaceFileResourceService } from "./workspace-file-resources.js";
 export { workProductService } from "./work-products.js";
 export { connectorEntitlementService } from "./connector-entitlement.js";
 export { connectorHandshakeService } from "./connector-handshake.js";
+export { connectorGuardrailService } from "./connector-guardrail.js";
 export { logActivity, type LogActivityInput } from "./activity-log.js";
 export { notifyHireApproved, type NotifyHireApprovedInput } from "./hire-hook.js";
 export { publishLiveEvent, subscribeCompanyLiveEvents } from "./live-events.js";

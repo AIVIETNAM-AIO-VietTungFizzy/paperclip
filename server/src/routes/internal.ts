@@ -4,6 +4,8 @@ import { eq, and, notInArray, inArray } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { connectors, tenantConnectors, connectorToolRegistry } from "@paperclipai/db";
 import type { EntitlementStore } from "../services/entitlement-store.js";
+import { secretService } from "../services/secrets.js";
+import { connectorGuardrailService } from "../services/connector-guardrail.js";
 
 function requireCpAuth(req: import("express").Request): void {
   const expectedToken = process.env.CP_SERVICE_TOKEN;
@@ -234,6 +236,27 @@ export function internalRoutes(
     const enabledTools = toolRows.map((tr) => tr.namespacedName);
 
     res.json({ ...row, packageTier, enabledTools });
+  });
+
+  router.get("/tenants/:tenantId/connectors/:connectorId/credential-headers", async (req, res) => {
+    try {
+      requireCpAuth(req);
+    } catch (err: unknown) {
+      const error = err as { status?: number; message?: string };
+      res.status(error.status ?? 401).json({ error: error.message ?? "cp_service_token_required" });
+      return;
+    }
+
+    if (!db) {
+      res.status(503).json({ error: "database_not_available" });
+      return;
+    }
+
+    const { tenantId, connectorId } = req.params;
+    const secrets = secretService(db);
+    const guardrail = connectorGuardrailService(db, secrets);
+    const result = await guardrail.resolveConnectorCredentials(tenantId, connectorId);
+    res.json(result);
   });
 
   return router;

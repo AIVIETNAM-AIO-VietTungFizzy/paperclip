@@ -237,6 +237,7 @@ export function connectorRoutes(db: Db) {
 
       const namespace = req.body.namespace ?? connector.connectorKey;
       const endpointUrl = connector.endpointUrl ?? "";
+      const credentialValues = req.body.credentialValues ?? {};
 
       const [tc] = await db
         .insert(tenantConnectors)
@@ -244,13 +245,13 @@ export function connectorRoutes(db: Db) {
           tenantId: companyId,
           connectorId,
           status: "pending_config",
-          credentialRefs: {},
+          credentialRefs: credentialValues,
           namespace,
           resolvedEndpoint: endpointUrl,
         })
         .onConflictDoUpdate({
           target: [tenantConnectors.tenantId, tenantConnectors.connectorId],
-          set: { status: "pending_config", namespace, resolvedEndpoint: endpointUrl, updatedAt: new Date() },
+          set: { status: "pending_config", namespace, resolvedEndpoint: endpointUrl, credentialRefs: credentialValues, updatedAt: new Date() },
         })
         .returning();
 
@@ -295,6 +296,7 @@ export function connectorRoutes(db: Db) {
 
       const patch: Record<string, unknown> = { updatedAt: new Date() };
       if (req.body.namespace) patch.namespace = req.body.namespace;
+      if (req.body.credentialValues) patch.credentialRefs = req.body.credentialValues;
 
       const updated = await db
         .update(tenantConnectors)
