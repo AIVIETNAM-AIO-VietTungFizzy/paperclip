@@ -345,6 +345,26 @@ describe("connector routes", () => {
 
       expect(res.status).toBe(404);
     });
+
+    it("stores credentialValues in credentialRefs on enable", async () => {
+      const connector = { id: "c1", connectorKey: "deerflow", connectorName: "DeerFlow", status: "active", endpointUrl: "http://example.com/mcp" };
+      const tc = { id: "tc1", tenantId: "company1", connectorId: "c1", status: "enabled" };
+
+      setupSelectSequence([[connector]]);
+      const insertChain = setupInsert([tc]);
+
+      const app = createApp({ companyIds: ["company1"] });
+      const res = await request(app)
+        .post("/api/companies/company1/connectors/c1/enable")
+        .send({
+          namespace: "deerflow",
+          credentialValues: { apiKey: "my-secret-key", headerName: "X-API-Key" },
+        });
+
+      expect(res.status).toBe(200);
+      const insertCallArgs = (insertChain.values as ReturnType<typeof vi.fn>).mock.calls[0][0];
+      expect(insertCallArgs.credentialRefs).toEqual({ apiKey: "my-secret-key", headerName: "X-API-Key" });
+    });
   });
 
   describe("POST /api/connectors/test-endpoint", () => {
@@ -428,6 +448,54 @@ describe("connector routes", () => {
       const app = createApp({ companyIds: ["company1"] });
       const res = await request(app)
         .post("/api/companies/company1/connectors/unknown/disable");
+
+      expect(res.status).toBe(404);
+    });
+  });
+
+  describe("PATCH /api/companies/:companyId/connectors/:connectorId", () => {
+    it("updates a tenant connector's namespace", async () => {
+      const existing = { id: "tc1", tenantId: "company1", connectorId: "c1", status: "enabled", credentialRefs: { apiKey: "old-key" } };
+      const updated = { ...existing, namespace: "new-ns" };
+
+      setupSelectSequence([[existing]]);
+      const updateChain = setupUpdate([updated]);
+
+      const app = createApp({ companyIds: ["company1"] });
+      const res = await request(app)
+        .patch("/api/companies/company1/connectors/c1")
+        .send({ namespace: "new-ns" });
+
+      expect(res.status).toBe(200);
+      expect(res.body.namespace).toBe("new-ns");
+      const setCallArgs = (updateChain.set as ReturnType<typeof vi.fn>).mock.calls[0][0];
+      expect(setCallArgs).not.toHaveProperty("credentialRefs");
+    });
+
+    it("updates credentialRefs when credentialValues are provided", async () => {
+      const existing = { id: "tc1", tenantId: "company1", connectorId: "c1", status: "enabled", credentialRefs: {} };
+      const updated = { ...existing, credentialRefs: { apiKey: "new-key" } };
+
+      setupSelectSequence([[existing]]);
+      const updateChain = setupUpdate([updated]);
+
+      const app = createApp({ companyIds: ["company1"] });
+      const res = await request(app)
+        .patch("/api/companies/company1/connectors/c1")
+        .send({ credentialValues: { apiKey: "new-key" } });
+
+      expect(res.status).toBe(200);
+      const setCallArgs = (updateChain.set as ReturnType<typeof vi.fn>).mock.calls[0][0];
+      expect(setCallArgs.credentialRefs).toEqual({ apiKey: "new-key" });
+    });
+
+    it("returns 404 for unknown tenant connector", async () => {
+      setupSelectSequence([[]]);
+
+      const app = createApp({ companyIds: ["company1"] });
+      const res = await request(app)
+        .patch("/api/companies/company1/connectors/unknown")
+        .send({});
 
       expect(res.status).toBe(404);
     });
