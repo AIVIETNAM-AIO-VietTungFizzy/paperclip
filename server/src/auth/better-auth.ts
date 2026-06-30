@@ -149,41 +149,7 @@ export function createBetterAuthInstance(db: Db, config: Config, trustedOrigins:
       disableSignUp: config.authDisableSignUp,
     },
     advanced: buildBetterAuthAdvancedOptions({ disableSecureCookies }),
-    databaseHooks: {
-      user: {
-        create: {
-          after: async (user: any) => {
-            if (process.env.PAPERCLIP_AUTO_SEED !== "true") return;
-            try {
-              const { companyMemberships, instanceUserRoles, companies } = await import("@paperclipai/db/schema/index");
-              const { eq, and } = await import("drizzle-orm");
-
-              const companyRows = await (db as any).select({ id: companies.id }).from(companies).limit(1);
-              if (companyRows.length === 0) return;
-
-              const existingMembership = await (db as any)
-                .select({ id: companyMemberships.id })
-                .from(companyMemberships)
-                .where(and(eq(companyMemberships.principalId, user.id), eq(companyMemberships.companyId, companyRows[0].id)))
-                .then((rows: any[]) => rows[0] ?? null);
-              if (existingMembership) return;
-
-              await (db as any).insert(instanceUserRoles).values({ userId: user.id, role: "instance_admin" });
-
-              await (db as any).insert(companyMemberships).values({
-                companyId: companyRows[0].id,
-                principalType: "user",
-                principalId: user.id,
-                status: "active",
-                membershipRole: "owner",
-              });
-            } catch (err) {
-              console.error("[auto-claim] Failed to grant seeded company access to new user:", err);
-            }
-          },
-        },
-      },
-    },
+    databaseHooks: {},
   };
 
   if (!baseUrl) {
