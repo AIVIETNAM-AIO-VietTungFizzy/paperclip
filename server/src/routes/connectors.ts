@@ -2,18 +2,19 @@ import { Router } from "express";
 import type { Db } from "@paperclipai/db";
 import { connectors as connectorsTable, tenantConnectors, connectorToolRegistry } from "@paperclipai/db";
 import { eq, and } from "drizzle-orm";
-import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { validate } from "../middleware/validate.js";
 import { assertBoard, assertCompanyAccess } from "./authz.js";
 import { logActivity } from "../services/activity-log.js";
 import { connectorEntitlementService } from "../services/connector-entitlement.js";
 import { connectorHandshakeService } from "../services/connector-handshake.js";
-import { createConnectorSchema, updateConnectorSchema, enableConnectorSchema, updateTenantConnectorSchema, toggleConnectorToolSchema } from "@paperclipai/shared";
+import { connectorRefreshService, probeConnectorTools } from "../services/connector-refresh.js";
+import { createConnectorSchema, updateConnectorSchema, enableConnectorSchema, updateTenantConnectorSchema, setToolEnabledSchema } from "@paperclipai/shared";
 
 export function connectorRoutes(db: Db) {
   const router = Router();
   const entitlement = connectorEntitlementService(db);
   const handshake = connectorHandshakeService(db);
+  const refresh = connectorRefreshService(db);
 
   router.get("/connectors", async (_req, res) => {
     const all = await db.select().from(connectorsTable).orderBy(connectorsTable.connectorName);
@@ -86,38 +87,8 @@ export function connectorRoutes(db: Db) {
       }
     }
 
-    try {
-      const { StreamableHTTPClientTransport } = await import(
-        "@modelcontextprotocol/sdk/client/streamableHttp.js"
-      );
-
-      const transport = new StreamableHTTPClientTransport(
-        new URL(endpointUrl),
-        headers ? { requestInit: { headers } } : undefined,
-      );
-
-      const client = new Client(
-        { name: "paperclip-connector-test", version: "1.0.0" },
-        { capabilities: {} },
-      );
-
-      await client.connect(transport);
-
-      const abortController = new AbortController();
-      const timeout = setTimeout(() => abortController.abort(), 10_000);
-
-      try {
-        const result = await client.listTools(undefined, { signal: abortController.signal });
-        const tools = (result.tools as Array<{ name: string; description?: string }>) ?? [];
-        res.json({ ok: true, tools });
-      } finally {
-        clearTimeout(timeout);
-        await client.close().catch(() => {});
-      }
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      res.json({ ok: false, error: message.slice(0, 500) });
-    }
+    const result = await probeConnectorTools(endpointUrl, headers ? { headers } : {});
+    res.json(result);
   });
 
   router.get("/connectors/:id", async (req, res) => {
@@ -208,11 +179,29 @@ export function connectorRoutes(db: Db) {
       .from(connectorsTable)
       .where(eq(connectorsTable.status, "active"));
 
-    const result = allConnectors.map((c) => ({
-      ...c,
-      enabled: enabledConnectorIds.has(c.id),
-      tenantConnector: enabled.find((e) => e.connectorId === c.id) ?? null,
-    }));
+    // Fetch per-tool registry rows for each enabled tenant connector so the
+    // UI can render the pending-approval banner and persist enable toggles.
+    const registryByTenantConnector = new Map<string, unknown[]>();
+    await Promise.all(
+      enabled.map(async (tc) => {
+        const rows = await db
+          .select()
+          .from(connectorToolRegistry)
+          .where(eq(connectorToolRegistry.tenantConnectorId, tc.id));
+        registryByTenantConnector.set(tc.id, rows);
+      }),
+    );
+
+    const result = allConnectors.map((c) => {
+      const tc = enabled.find((e) => e.connectorId === c.id) ?? null;
+      const tools = tc ? (registryByTenantConnector.get(tc.id) ?? []) : [];
+      return {
+        ...c,
+        enabled: enabledConnectorIds.has(c.id),
+        tenantConnector: tc,
+        tools,
+      };
+    });
 
     res.json(result);
   });
@@ -390,18 +379,113 @@ export function connectorRoutes(db: Db) {
     res.json(tools);
   });
 
-  // ── Tenant-facing: Toggle a connector tool's enabled status ──
-  router.post(
-    "/companies/:companyId/connectors/:connectorId/tools/:toolId/toggle",
-    validate(toggleConnectorToolSchema),
+  router.post("/connectors/:id/sync", async (req, res) => {
+    assertBoard(req);
+    const id = req.params.id as string;
+
+    const connector = await db
+      .select()
+      .from(connectorsTable)
+      .where(eq(connectorsTable.id, id))
+      .limit(1)
+      .then((r) => r[0]);
+
+    if (!connector) { res.status(404).json({ ok: false, error: "connector_not_found" }); return; }
+
+    const priorCapabilities = (connector.capabilities ?? {}) as Record<string, unknown>;
+    const priorTools = Array.isArray(priorCapabilities.tools) ? (priorCapabilities.tools as Array<{ name: string }>) : [];
+    const priorNames = new Set(priorTools.map((t) => t.name));
+
+    const result = await refresh.refreshConnectorTools(id);
+
+    if (!result.ok) {
+      res.json({ ok: false, error: result.error });
+      return;
+    }
+
+    const tools = result.tools ?? [];
+    const newNames = new Set(tools.map((t) => t.name));
+    const added = tools.filter((t) => !priorNames.has(t.name));
+    const addedNames = added.map((t) => t.name);
+    const removed = [...priorNames].filter((n) => !newNames.has(n));
+
+    const capabilities = { ...(priorCapabilities as Record<string, unknown>), tools: tools.map((t) => ({ name: t.name, description: t.description })) };
+    await db
+      .update(connectorsTable)
+      .set({ capabilities, updatedAt: new Date() })
+      .where(eq(connectorsTable.id, id));
+
+    // Reconcile per-tenant registry: for each tenant connector enabled on this
+    // connector, insert pending rows for newly-discovered tools so the tenant
+    // can approve them. Existing registry rows are left untouched (re-sync must
+    // not flip enabled/pending state of already-approved tools).
+    if (addedNames.length > 0) {
+      const enabledTenantConnectors = await db
+        .select({
+          id: tenantConnectors.id,
+          namespace: tenantConnectors.namespace,
+        })
+        .from(tenantConnectors)
+        .where(
+          and(
+            eq(tenantConnectors.connectorId, id),
+            eq(tenantConnectors.status, "enabled"),
+          ),
+        );
+
+      if (enabledTenantConnectors.length > 0) {
+        const registryRows = [];
+        for (const tc of enabledTenantConnectors) {
+          const ns = tc.namespace ?? connector.connectorKey;
+          for (const tool of added) {
+            registryRows.push({
+              tenantConnectorId: tc.id,
+              toolName: tool.name,
+              namespacedName: `${ns}__${tool.name}`,
+              description: tool.description ?? null,
+              inputSchema: tool.inputSchema ?? null,
+              enabled: true,
+              pending: true,
+              riskClass: "connector",
+              approvalClass: "auto",
+              requiresApproval: false,
+            });
+          }
+        }
+        if (registryRows.length > 0) {
+          await db
+            .insert(connectorToolRegistry)
+            .values(registryRows)
+            .onConflictDoNothing({ target: [connectorToolRegistry.tenantConnectorId, connectorToolRegistry.toolName] });
+        }
+      }
+    }
+
+    await logActivity(db, {
+      companyId: "system",
+      actorType: "user",
+      actorId: req.actor.userId ?? "board",
+      action: "connector.synced",
+      entityType: "connector",
+      entityId: id,
+      details: { added: addedNames, removed, toolCount: tools.length },
+    });
+
+    res.json({ ok: true, added: addedNames, removed, tools });
+  });
+
+  router.patch(
+    "/companies/:companyId/connectors/:connectorId/tools/:toolId",
+    validate(setToolEnabledSchema),
     async (req, res) => {
       assertBoard(req);
       const companyId = req.params.companyId as string;
       const connectorId = req.params.connectorId as string;
       const toolId = req.params.toolId as string;
       assertCompanyAccess(req, companyId);
+      const { enabled } = req.body as { enabled: boolean };
 
-      const tc = await db
+      const tcRow = await db
         .select({ id: tenantConnectors.id })
         .from(tenantConnectors)
         .where(
@@ -413,39 +497,39 @@ export function connectorRoutes(db: Db) {
         .limit(1)
         .then((r) => r[0]);
 
-      if (!tc) { res.status(404).json({ error: "tenant_connector_not_found" }); return; }
+      if (!tcRow) { res.status(404).json({ error: "tenant_connector_not_found" }); return; }
 
-      const existing = await db
+      const toolRow = await db
         .select()
         .from(connectorToolRegistry)
         .where(
           and(
-            eq(connectorToolRegistry.id, toolId),
-            eq(connectorToolRegistry.tenantConnectorId, tc.id),
+            eq(connectorToolRegistry.tenantConnectorId, tcRow.id),
+            eq(connectorToolRegistry.toolName, toolId),
           ),
         )
         .limit(1)
         .then((r) => r[0]);
 
-      if (!existing) { res.status(404).json({ error: "tool_not_found" }); return; }
+      if (!toolRow) { res.status(404).json({ error: "tool_not_found" }); return; }
 
-      const [updated] = await db
+      const updated = await db
         .update(connectorToolRegistry)
-        .set({ enabled: req.body.enabled })
-        .where(eq(connectorToolRegistry.id, toolId))
+        .set({ enabled })
+        .where(eq(connectorToolRegistry.id, toolRow.id))
         .returning();
 
       await logActivity(db, {
         companyId,
         actorType: "user",
         actorId: req.actor.userId ?? "board",
-        action: req.body.enabled ? "connector.tool_enabled" : "connector.tool_disabled",
+        action: "connector.tool_enabled_toggled",
         entityType: "connector_tool",
-        entityId: toolId,
-        details: { connectorId, toolName: existing.toolName, namespacedName: existing.namespacedName },
+        entityId: toolRow.id,
+        details: { connectorId, toolId, enabled },
       });
 
-      res.json(updated);
+      res.json({ ok: true, tool: updated[0] });
     },
   );
 

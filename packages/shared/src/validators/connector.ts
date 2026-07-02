@@ -43,7 +43,7 @@ export const updateTenantConnectorSchema = z.object({
 }).strict();
 export type UpdateTenantConnector = z.infer<typeof updateTenantConnectorSchema>;
 
-export const toggleConnectorToolSchema = z.object({
+export const setToolEnabledSchema = z.object({
   enabled: z.boolean(),
 }).strict();
-export type ToggleConnectorTool = z.infer<typeof toggleConnectorToolSchema>;
+export type SetToolEnabled = z.infer<typeof setToolEnabledSchema>;
