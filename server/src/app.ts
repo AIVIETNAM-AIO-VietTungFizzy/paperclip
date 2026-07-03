@@ -47,6 +47,7 @@ import { adapterRoutes } from "./routes/adapters.js";
 import { connectorRoutes } from "./routes/connectors.js";
 import { enforceRoutes } from "./routes/enforce.js";
 import { internalRoutes } from "./routes/internal.js";
+import { skillInstallerRoutes } from "./routes/skill-installer.js";
 import { pluginUiStaticRoutes } from "./routes/plugin-ui-static.js";
 import { createEntitlementStore } from "./services/entitlement-store.js";
 
@@ -385,6 +386,7 @@ export async function createApp(
   const entitlementStore = createEntitlementStore();
   api.use("/core", enforceRoutes(db));
   api.use("/runtime/internal", internalRoutes(entitlementStore, db));
+  api.use(skillInstallerRoutes(db));
   app.use("/api", api);
   app.use("/api", (_req, res) => {
     res.status(404).json({ error: "API route not found" });

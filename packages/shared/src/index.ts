@@ -1316,6 +1316,7 @@ export {
   updateConnectorSchema,
   enableConnectorSchema,
   updateTenantConnectorSchema,
+  toggleConnectorToolSchema,
   type CreateConnector,
   type UpdateConnector,
   type EnableConnector,
